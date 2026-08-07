@@ -1,0 +1,13 @@
+# OneBrainer — Caddy configuration
+# CRITICAL: No XTransformPort wildcard proxy.
+# Only the Next.js app (port 3000) is proxied.
+# Mini-services must NOT be exposed externally — they are internal-only.
+
+:81 {
+	reverse_proxy localhost:3000 {
+		header_up Host {host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+}

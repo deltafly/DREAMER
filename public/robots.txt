@@ -1,0 +1,3 @@
+# OneBrainer is an internal/dashboard application — do not index
+User-agent: *
+Disallow: /

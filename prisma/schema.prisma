@@ -1,0 +1,484 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===== MULTI-TENANT: Users & Workspaces =====
+
+model User {
+  id             Int              @id @default(autoincrement())
+  email          String           @unique
+  name           String
+  passwordHash   String
+  sessionVersion Int              @default(0)
+  createdAt      String
+  memberships    WorkspaceMember[]
+  ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
+  consents       Consent[]
+  dataExports    DataExport[]
+
+  @@map("users")
+}
+
+model Workspace {
+  id        Int              @id @default(autoincrement())
+  name      String
+  slug      String           @unique
+  plan      String           @default("free")
+  ownerId   Int
+  createdAt String
+  members   WorkspaceMember[]
+  ledgers   Ledger[]
+  facts     Fact[]
+  decisions Decision[]
+  preferences Preference[]
+  projectStates ProjectState[]
+  disputes  Dispute[]
+  briefs    Brief[]
+  agents    Agent[]
+  librarianRuns LibrarianRun[]
+  sparks    Spark[]
+  sparkWeights SparkWeight[]
+  associations Association[]
+  insights  Insight[]
+  brainQueries BrainQuery[]
+  neuralActivity NeuralActivity[]
+  contestEntries ContestEntry[]
+  achievements  Achievement[]
+  settings      WorkspaceSettings?
+
+  owner User @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          Int       @id @default(autoincrement())
+  userId      Int
+  workspaceId Int
+  role        String    @default("member")
+  joinedAt    String
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@map("workspace_members")
+}
+
+// ===== L1: Raw ledger — append-only, never deleted =====
+
+model Ledger {
+  id          Int       @id @default(autoincrement())
+  ts          String
+  agentId     String
+  topic       String
+  kind        String    @default("digest")
+  content     String
+  processed   Boolean   @default(false)
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([workspaceId, topic])
+}
+
+// ===== L2: Facts — typed, small, high-quality (supersede chain) =====
+
+model Fact {
+  id             Int      @id @default(autoincrement())
+  topic          String
+  entity         String
+  attribute      String
+  statement      String
+  confidence     String   @default("medium")
+  source         String?
+  validFrom      String
+  reviewAt       String?
+  supersededBy   Int?
+  stale          Boolean  @default(false)
+  activationScore Float    @default(0)
+  lastActivatedAt String?
+  workspaceId    Int
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  supersedingFact Fact?  @relation("SupersedeChain", fields: [supersededBy], references: [id])
+  supersededFacts  Fact[] @relation("SupersedeChain")
+
+  linksA Association[] @relation("LinkA")
+  linksB Association[] @relation("LinkB")
+
+  @@index([workspaceId])
+  @@index([workspaceId, topic])
+}
+
+// ===== L2: Decisions — with calibration loop =====
+
+model Decision {
+  id               Int      @id @default(autoincrement())
+  topic            String
+  decision         String
+  rationale        String
+  decidedAt        String
+  status           String   @default("active")
+  supersededBy     Int?
+  reviewAt         String?
+  outcome          String?
+  outcomeAt        String?
+  lesson           String?
+  workspaceId      Int
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  supersedingDecision Decision?  @relation("DecisionSupersede", fields: [supersededBy], references: [id])
+  supersededDecisions  Decision[] @relation("DecisionSupersede")
+
+  @@index([workspaceId])
+  @@index([workspaceId, topic])
+}
+
+// ===== L2: Preferences — how we work =====
+
+model Preference {
+  id          Int       @id @default(autoincrement())
+  scope       String
+  statement   String
+  active      Boolean   @default(true)
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ===== L2: Project state — volatile with TTL =====
+
+model ProjectState {
+  id          Int       @id @default(autoincrement())
+  topic       String
+  key         String
+  value       String
+  updatedAt   String
+  expiresAt   String?
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, topic, key])
+}
+
+// ===== Disputes — workflow objects, not errors =====
+
+model Dispute {
+  id          Int       @id @default(autoincrement())
+  createdAt   String
+  topic       String
+  existingRef String
+  incoming    String
+  detectedBy  String
+  status      String   @default("open")
+  ruling      String?
+  resolvedAt  String?
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([workspaceId, topic])
+}
+
+// ===== L3: Brief cache =====
+
+model Brief {
+  id          Int       @id @default(autoincrement())
+  topic       String
+  content     String
+  builtAt     String
+  dirty       Boolean   @default(false)
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, topic])
+}
+
+// ===== Agent contracts (RBAC) =====
+
+model Agent {
+  id          Int       @id @default(autoincrement())
+  agentId     String
+  keyHash     String
+  role        String
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, agentId])
+  @@index([keyHash])
+}
+
+// ===== Librarian run log =====
+
+model LibrarianRun {
+  id                Int      @id @default(autoincrement())
+  startedAt         String
+  endedAt           String?
+  status            String   @default("running")
+  summary           String?
+  factsExtracted    Int      @default(0)
+  decisionsExtracted Int     @default(0)
+  disputesCreated   Int      @default(0)
+  briefsRebuilt     Int      @default(0)
+  staleFlagged      Int      @default(0)
+  workspaceId       Int
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ===== DREAMER: Sparks — associative insights from cross-topic collision =====
+
+model Spark {
+  id          Int       @id @default(autoincrement())
+  createdAt   String
+  seedRef     String
+  pairedRef   String
+  seedTopic   String
+  pairedTopic String
+  insight     String
+  kind        String
+  score       Float
+  deliveredAt String?
+  rating      Int?
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ===== DREAMER: Bandit-loop state — pairwise topic weights =====
+
+model SparkWeight {
+  id          Int       @id @default(autoincrement())
+  topicPair   String
+  trials      Int       @default(0)
+  hits        Int       @default(0)
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, topicPair])
+}
+
+// ===== NEURAL LINKS: Associations between facts =====
+
+model Association {
+  id               Int       @id @default(autoincrement())
+  factIdA          Int
+  factIdB          Int
+  label            String
+  strength         Float     @default(0.5)
+  activationWeight Float     @default(0.5)
+  fireCount        Int       @default(0)
+  lastFiredAt      String?
+  createdBy        String    @default("librarian")
+  createdAt        String
+  description      String?
+  workspaceId      Int
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  factA Fact @relation("LinkA", fields: [factIdA], references: [id])
+  factB Fact @relation("LinkB", fields: [factIdB], references: [id])
+
+  @@unique([workspaceId, factIdA, factIdB, label])
+}
+
+// ===== BRAIN INSIGHTS: Self-generated observations =====
+
+model Insight {
+  id          Int       @id @default(autoincrement())
+  createdAt   String
+  kind        String
+  severity    String    @default("info")
+  title       String
+  description String
+  topics      String
+  actionable  Boolean   @default(false)
+  dismissed   Boolean   @default(false)
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ===== BRAIN QUERIES: Log of brain queries =====
+
+model BrainQuery {
+  id          Int       @id @default(autoincrement())
+  queriedAt   String
+  context     String
+  returnedIds String
+  useful      Boolean?
+  workspaceId Int
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ===== NEURAL: Activity log for spreading activation tracking =====
+
+model NeuralActivity {
+  id           Int      @id @default(autoincrement())
+  factId       Int
+  activation   Float
+  source       String
+  iteration    Int
+  triggeredBy  String
+  createdAt    String
+  workspaceId  Int
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, factId])
+  @@index([workspaceId, createdAt])
+  @@map("neural_activity")
+}
+
+// ===== GDPR: User Consent Records =====
+
+model Consent {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  kind        String
+  granted     Boolean  @default(true)
+  grantedAt   String
+  revokedAt   String?
+  ipAddress   String?
+  userAgent   String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind])
+  @@map("consents")
+}
+
+// ===== GDPR: Data Export Requests =====
+
+model DataExport {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  status      String   @default("pending")
+  requestedAt String
+  completedAt String?
+  filePath    String?
+  expiresAt   String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("data_exports")
+}
+
+// ===== GDPR: Audit Log =====
+
+model AuditLog {
+  id          Int      @id @default(autoincrement())
+  userId      Int?
+  action      String
+  resource    String
+  details     String?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   String
+
+  @@map("audit_logs")
+}
+
+// ===== CONTEST V2: Contests =====
+
+model Contest {
+  id          Int      @id @default(autoincrement())
+  title       String
+  description String
+  kind        String
+  status      String   @default("active")
+  startsAt    String
+  endsAt      String
+  createdBy   Int?
+  prize       String?
+  rules       String?
+  createdAt   String
+
+  entries     ContestEntry[]
+  challenges  Challenge[]
+
+  @@map("contests")
+}
+
+// ===== CONTEST V2: Contest Entries (workspace participation) =====
+
+model ContestEntry {
+  id          Int      @id @default(autoincrement())
+  contestId   Int
+  workspaceId Int
+  score       Float    @default(0)
+  rank        Int?
+  submittedAt String?
+  metadata    String?
+
+  contest   Contest   @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([contestId, workspaceId])
+  @@map("contest_entries")
+}
+
+// ===== CONTEST V2: Challenges (specific tasks within a contest) =====
+
+model Challenge {
+  id          Int      @id @default(autoincrement())
+  contestId   Int
+  title       String
+  description String
+  kind        String
+  points      Int      @default(100)
+  completedBy String?
+  completedAt String?
+
+  contest Contest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+
+  @@index([contestId])
+  @@map("challenges")
+}
+
+// ===== CONTEST V2: Achievements =====
+
+model Achievement {
+  id          Int      @id @default(autoincrement())
+  workspaceId Int
+  badge       String
+  title       String
+  description String
+  earnedAt    String
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, badge])
+  @@map("achievements")
+}
+
+// ===== SCHEDULER: Per-workspace settings for Dreamer & Librarian =====
+
+model WorkspaceSettings {
+  workspaceId        Int      @id // one row per workspace, PK = workspaceId
+  dreamerEnabled     Boolean   @default(false)
+  dreamerSchedule    String    @default("0 3 * * *")
+  dreamerLastRunAt   String?
+  dreamerNextRunAt   String?
+  librarianEnabled   Boolean   @default(false)
+  librarianSchedule  String    @default("0 */4 * * *")
+  librarianLastRunAt String?
+  librarianNextRunAt String?
+  timezone           String    @default("Europe/Budapest")
+  createdAt          String
+  updatedAt          String
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("workspace_settings")
+}

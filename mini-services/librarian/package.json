@@ -1,0 +1,17 @@
+{
+  "name": "onebrainer-librarian",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.11.1",
+    "zod": "^4.0.2"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.4",
+    "@types/bun": "^1.2.8"
+  }
+}

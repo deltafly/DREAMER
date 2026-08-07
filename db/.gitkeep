@@ -1,0 +1,2 @@
+# The SQLite database file (custom.db) is created here by `bun run db:push`.
+# Only this placeholder is tracked — database contents never enter git.

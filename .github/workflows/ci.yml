@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bunx prisma generate
+      - run: bun run lint
+      - run: bunx tsc --noEmit
+
+  build:
+    needs: lint-and-typecheck
+    runs-on: ubuntu-latest
+    # `bun run build` runs `prisma migrate deploy`, and `next build` evaluates
+    # src/lib/env.ts — both need these present or the job fails before compiling.
+    # Throwaway values: CI builds against a scratch SQLite file, never real data.
+    env:
+      DATABASE_URL: "file:./db/ci.db"
+      NEXTAUTH_SECRET: "ci-build-only-not-a-real-secret"
+      NEXTAUTH_URL: "http://localhost:3000"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bunx prisma generate
+      - run: bun run build

@@ -1,0 +1,378 @@
+# OneBrainer — Deployment útmutató
+
+> **Összefoglaló**: Ez a dokumentum az OneBrainer SaaS alkalmazás telepítését, konfigurálását és üzemeltetését írja le. A rendszer Next.js 16 standalone output-tal, SQLite adatbázissal és Prisma ORM-mel működik.
+
+---
+
+## Tartalomjegyzék
+
+1. [Előfeltételek](#előfeltételek)
+2. [Environment változók](#environment-változók)
+3. [Telepítés](#telepítés)
+4. [Build folyamat](#build-folyamat)
+5. [Dev vs Production különbségek](#dev-vs-production-különbségek)
+6. [Migration kezelés](#migration-kezelés)
+7. [Seed adatok](#seed-adatok)
+8. [Fordított proxy (Caddy)](#fordított-proxy-caddy)
+9. [Üzemeltetés](#üzemeltetés)
+
+---
+
+## Előfeltételek
+
+| Követelmény | Verzió | Megjegyzés |
+|-------------|--------|------------|
+| Node.js / Bun | Node 18+ vagy Bun 1.3+ | Ajánlott: Bun (gyorsabb) |
+| SQLite | Beépített Prisma-ban | Fájl alapú (`file:` URL) |
+| Git | Bármely | Forráskód kezelés |
+| Caddy (opcionális) | 2.x | Fordított proxy, HTTPS |
+
+### Ajánlott hardver
+
+| Erőforrás | Minimum | Ajánlott |
+|-----------|---------|----------|
+| RAM | 512 MB | 1 GB |
+| CPU | 1 mag | 2 mag |
+| Disk | 100 MB | 500 MB (log-okkal) |
+
+---
+
+## Environment változók
+
+A projekt `.env.example` fájl tartalmazza a dokumentált sablont.
+
+### Kötelező
+
+| Változó | Leírás | Példa |
+|---------|--------|-------|
+| `DATABASE_URL` | SQLite adatbázis elérési út | `file:/app/data/onebrainer.db` |
+
+### Production-ban kötelező
+
+| Változó | Leírás | Generálás |
+|---------|--------|-----------|
+| `NEXTAUTH_SECRET` | JWT aláíró titok | `openssl rand -base64 32` |
+| `NEXTAUTH_URL` | Publikus URL | `https://onebrainer.example.com` |
+
+### Opcionális
+
+| Változó | Leírás | Alapérték |
+|---------|--------|-----------|
+| `SCHEDULER_SECRET` | Scheduler tick endpoint auth titok | — |
+| `LOG_LEVEL` | Minimális log szint | `info` (debug/info/warn/error) |
+| `MCP_ALLOWED_ORIGINS` | MCP CORS engedélyezett origók (vesszővel elválasztva) | `*` (dev) |
+| `NEXT_PUBLIC_APP_URL` | Publikus app URL (MCP self-reference) | — |
+| `NODE_ENV` | Környezet | `development` / `production` |
+
+### Példa `.env` fájl (production)
+
+```env
+# ===== Kötelező =====
+DATABASE_URL=file:/app/data/onebrainer.db
+
+# ===== Auth (production kötelező) =====
+NEXTAUTH_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
+NEXTAUTH_URL=https://onebrainer.example.com
+
+# ===== Scheduler =====
+SCHEDULER_SECRET=my-cron-secret-here
+
+# ===== Logging =====
+LOG_LEVEL=info
+
+# ===== MCP =====
+MCP_ALLOWED_ORIGINS=https://claude.ai,https://onebrainer.example.com
+
+# ===== Public URL =====
+NEXT_PUBLIC_APP_URL=https://onebrainer.example.com
+NODE_ENV=production
+```
+
+---
+
+## Telepítés
+
+### 1. Forráskód letöltés
+
+```bash
+git clone <repo-url> onebrainer
+cd onebrainer
+```
+
+### 2. Függőségek telepítése
+
+```bash
+bun install
+# vagy
+npm install
+```
+
+A `postinstall` hook automatikusan lefuttatja a `prisma generate`-t.
+
+### 3. Környezeti változók beállítása
+
+```bash
+cp .env.example .env
+# Szerkeszd az .env fájlt a fenti leírás szerint
+```
+
+### 4. Adatbázis inicializálás
+
+```bash
+# Migration-ek alkalmazása
+bun run db:migrate:deploy
+
+# Seed adatok betöltése (opcionális, de ajánlott)
+bun run db:seed
+```
+
+### 5. Dev server indítás
+
+```bash
+bun run dev
+```
+
+A dashboard elérhető: `http://localhost:3000`
+
+---
+
+## Build folyamat
+
+A `package.json` build scriptje:
+
+```bash
+"build": "prisma generate && prisma migrate deploy && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/"
+```
+
+### Lépések sorrendje
+
+1. **`prisma generate`** — Prisma Client generálás a séma alapján
+2. **`prisma migrate deploy`** — Várakozó migration-ek alkalmazása (non-interactive)
+3. **`next build`** — Next.js standalone build (`output: "standalone"` a `next.config.ts`-ben)
+4. **`cp -r .next/static`** — Statikus fájlok másolása a standalone könyvtárba
+5. **`cp -r public`** — Public mappa másolása a standalone könyvtárba
+
+### Production indítás
+
+```bash
+NODE_ENV=production bun .next/standalone/server.js
+# vagy
+NODE_ENV=production node .next/standalone/server.js
+```
+
+A server alapértelmezetten a 3000-es porton hallgat.
+
+---
+
+## Dev vs Production különbségek
+
+| Aspektus | Development | Production |
+|----------|-------------|------------|
+| **Parancs** | `bun run dev` | `bun run start` |
+| **Build** | Nincs (Turbopack JIT) | `bun run build` |
+| **NEXTAUTH_SECRET** | Hardcoded dev secret | **Kötelező** (else throw) |
+| **NEXTAUTH_URL** | `http://localhost:3000` | **Kötelező** |
+| **Auth** | Nem kötelező (workspace 1 fallback) | Kötelező minden API route-n |
+| **DB query log** | Igen (`log: ['query']`) | Nem |
+| **Logger** | Színes emberi formátum | JSON (log aggregációhoz) |
+| **Scheduler cron** | Kikapcsolva (Turbopack védelem) | Aktív (croner) |
+| **API self-call** | Nincs | Nincs |
+| **TypeScript** | `ignoreBuildErrors: true` | Build (`next build`) szintén ignore |
+| **React Strict Mode** | Kikapcsolva | Kikapcsolva |
+
+---
+
+## Migration kezelés
+
+A projekt `prisma migrate` infrastruktúrát használ (baseline migration: `0_init`).
+
+### Új migration létrehozása (fejlesztés)
+
+```bash
+bun run db:migrate:dev --name leiras
+```
+
+Ez a parancs:
+1. Létrehoz egy új migration SQL fájlt a `prisma/migrations/` könyvtárban
+2. Interaktívan megerősíti a migration-t
+3. Frissíti az adatbázist
+4. Újragenerálja a Prisma Client-et
+
+### Migration alkalmazása (production)
+
+```bash
+bun run db:migrate:deploy
+```
+
+Non-interactive — csak a még nem alkalmazott migration-eket futtatja.
+
+### Migration státusz ellenőrzése
+
+```bash
+bun run db:migrate:status
+```
+
+### Adatbázis reset (fejlesztés only!)
+
+```bash
+bun run db:reset
+```
+
+**Figyelem**: Ez törli az összes adatot és újra futtatja a seed scriptet!
+
+### Régi `db:push` vs új `migrate`
+
+A korábbi verziók `prisma db push`-t használtak, ami nem hagy migration history-t. A `db:push` script még elérhető, de **production-ban ne használd** — nincs rollback lehetőség, nincs history, a destruktív változások nem detektálhatók.
+
+---
+
+## Seed adatok
+
+A seed script (`prisma/seed.ts`) létrehozza a demo workspace alapadatokat:
+
+| Entitás | Mennyiség | Leírás |
+|---------|-----------|--------|
+| User | 1 | `demo@onebrainer.ai` (Demo User) |
+| Workspace | 1 | "Demo Brain" (plan: pro) |
+| WorkspaceSettings | 1 | Scheduler alapbeállítások |
+| Agents | 5 | claude-web, claude-code, orchestrator, glm-worker-1, librarian |
+| Preferences | 7 | Kódolási stílus, PR review, commit convention, stb. |
+| Ledger | 12 | Strukturált JSON digest bejegyzések |
+| Facts | 18 | Tények 6 témában (backend, frontend, infra, auth, testing, CI/CD) |
+| Decisions | 6 | Aktív és completed döntések |
+| ProjectState | 5 | Volatilis állapot kulcsok |
+| Disputes | 3 | Nyitott és megoldott viták |
+| Briefs | 3 | Tudás összefoglalók (delta-brief formátum) |
+| LibrarianRuns | 5 | Múltbeli librarian futtatások |
+| Associations | 12 | Tények közötti neurális linkek |
+| Sparks | 8 | Dreamer generált insight-ok |
+| SparkWeights | 5 | Bandit-loop súlyok |
+| Insights | 8 | Pre-seeded brain insight-ok |
+| Consents (GDPR) | 4 | data_processing, analytics, marketing, essential |
+| AuditLogs | 5 | GDPR audit bejegyzések |
+| Contests | 3 | 2 aktív, 1 befejezett |
+| Challenges | 10 | Versenyfeladatok |
+| Achievements | 3 | knowledge-builder, well-connected, brain-awake |
+
+### Seed futtatása
+
+```bash
+bun run db:seed
+```
+
+### Seed újrafuttatása
+
+```bash
+bun run db:reset  # Teljes reset + seed
+```
+
+---
+
+## Fordított proxy (Caddy)
+
+A projekt tartalmaz egy `Caddyfile`-t, amely HTTPS terminációt és fordított proxy-t biztosít.
+
+### Alap Caddyfile
+
+```
+:81 {
+    reverse_proxy localhost:3000 {
+        header_up Host {host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Real-IP {remote_host}
+    }
+}
+```
+
+### Port átirányítás (fejlesztői)
+
+A Caddyfile támogat dinamikus port átirányítást:
+
+```
+:81 {
+    @transform_port_query {
+        query XTransformPort=*
+    }
+    handle @transform_port_query {
+        reverse_proxy localhost:{query.XTransformPort}
+    }
+    handle {
+        reverse_proxy localhost:3000
+    }
+}
+```
+
+---
+
+## Üzemeltetés
+
+### Health check
+
+```bash
+curl http://localhost:3000/api/health
+```
+
+Válasz:
+
+```json
+{
+  "status": "ok",
+  "version": "5.2.0",
+  "uptime": 3600,
+  "db": "connected",
+  "checks": { "factTableAccessible": true },
+  "activeTaskLocks": []
+}
+```
+
+### Scheduler
+
+A scheduler automatikusan indul a production build-ben (`getScheduler()` lazy init). Cron job-okat a `/api/settings` endpointon keresztül lehet konfigurálni.
+
+Külső cron trigger (opcionális):
+
+```bash
+curl -X POST http://localhost:3000/api/scheduler/tick \
+  -H "Authorization: Bearer $SCHEDULER_SECRET"
+```
+
+**Timing-safe**: A titok összehasonlítás `crypto.timingSafeEqual`-t használ.
+
+### Log szintek
+
+```bash
+LOG_LEVEL=debug bun run start   # Minden log
+LOG_LEVEL=warn bun run start    # Csak warning + error
+LOG_LEVEL=error bun run start   # Csak error
+```
+
+### Dev server auto-restart
+
+A `start.sh` egy végtelen ciklus, amely újraindítja a dev server-t ha az összeomlik:
+
+```bash
+#!/bin/bash
+cd /home/z/my-project
+while true; do
+  bun run dev
+  sleep 2
+done
+```
+
+### NPM script összefoglaló
+
+| Script | Parancs | Leírás |
+|--------|---------|--------|
+| `dev` | `next dev -p 3000` | Dev server (Turbopack) |
+| `build` | `prisma generate && migrate deploy && next build` | Production build |
+| `start` | `node .next/standalone/server.js` | Production server |
+| `lint` | `eslint .` | Kódellenőrzés |
+| `db:generate` | `prisma generate` | Prisma Client generálás |
+| `db:migrate:dev` | `prisma migrate dev` | Interaktív migration (dev) |
+| `db:migrate:deploy` | `prisma migrate deploy` | Migration alkalmazás (prod) |
+| `db:migrate:status` | `prisma migrate status` | Migration státusz |
+| `db:push` | `prisma db push` | Séma push (⚠️ production-ban ne használd) |
+| `db:reset` | `prisma migrate reset` | Teljes DB reset |
+| `db:seed` | `bun run prisma/seed.ts` | Seed adatok betöltése |
+| `postinstall` | `prisma generate` | Automatikus client gen (install után) |

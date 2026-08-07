@@ -1,0 +1,13 @@
+# Normalise line endings so the repo behaves the same on Linux, macOS and Windows.
+* text=auto eol=lf
+
+# Shell scripts and container files must stay LF or they break on Linux.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Caddyfile   text eol=lf
+
+# Binary assets — never touch.
+*.png binary
+*.jpg binary
+*.svg text
+*.db  binary

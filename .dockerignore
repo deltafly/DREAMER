@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.gitignore
+*.md
+docs/
+examples/
+skills/
+db/
+.env
+.env.local
+*.log
