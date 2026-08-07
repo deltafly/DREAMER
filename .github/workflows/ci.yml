@@ -18,6 +18,7 @@ jobs:
       - run: bunx prisma generate
       - run: bun run lint
       - run: bunx tsc --noEmit
+      - run: bun run test
 
   build:
     needs: lint-and-typecheck

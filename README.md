@@ -47,8 +47,12 @@ Two things are worth knowing before you clone it:
   Everything else — the API surface, the multi-tenant model, the spreading-activation
   query engine, GDPR, RBAC — runs anywhere. Swapping the SDK for a provider-agnostic
   client is the top item on the near-term list.
-- **Prompt-injection hardening is incomplete.** The Librarian ingests untrusted text and
-  feeds it to an LLM. Treat ingested content as hostile until this is closed.
+- **Prompt injection is contained, not solved.** The Librarian ingests untrusted text and
+  feeds it to an LLM. Every such call now fences the payload with a per-call random nonce
+  and validates the reply against a strict schema before anything is written
+  (`src/lib/llm-safety.ts`), so a compromised model cannot write outside the contract.
+  It can still influence *which* plausible facts get extracted — see
+  [SECURITY.md](./SECURITY.md).
 
 ---
 
@@ -896,14 +900,15 @@ async function getZAI() {
 - [x] MCP endpoint with agent keyHash auth
 - [x] Multi-tenant RBAC (owner/admin/member)
 - [x] GDPR compliance (consent, export, erase, audit)
+- [x] Prompt-injection containment on every LLM call (nonce fencing + schema validation)
 - [x] Benchmark harness (LongMemEval-style)
 - [x] Contest system
 - [x] Full security audit (17 findings fixed)
 
 ### Planned
 - [ ] **Provider-agnostic LLM client** — replace `z-ai-web-dev-sdk` so the repo runs anywhere
-- [ ] **Prompt-injection hardening** in the Librarian extraction path (ingested text is untrusted)
 - [ ] **Phase A**: LLM query expansion before keyword seeding (designed, not yet built)
+- [ ] Broaden test coverage beyond `llm-safety` to the extraction and query pipelines
 - [ ] **Phase C**: Fact-level embeddings for hybrid seed (semantic + keyword)
 - [ ] Real-time WebSocket notifications
 - [ ] File/document ingestion (PDF, DOCX, Markdown)

@@ -1,4 +1,13 @@
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
+import {
+  DreamerBatchSchema,
+  injectionGuard,
+  joinUntrusted,
+  newNonce,
+  parseLLMJson,
+  wrapUntrusted,
+} from '@/lib/llm-safety';
 
 // Lazy ZAI loader — avoids pulling in z-ai-web-dev-sdk at module eval time (TDZ fix)
 let _zai: Awaited<ReturnType<typeof import('z-ai-web-dev-sdk').default.create>> | null = null;
@@ -126,14 +135,23 @@ async function collideTopicsBatch(
   workspaceId: number,
 ): Promise<{
   sparks: { insight: string; kind: string; score: number; seedRef: string; pairedRef: string; topicA: string; topicB: string }[];
-  associations: { factA: number; factB: number; label: string; strength: number; description: string }[];
+  associations: { factA: number; factB: number; label: string; strength: number; description: string | null }[];
 }> {
-  // Build the batched prompt
+  // Fact statements originate from attacker-controlled ledger text, so the
+  // whole payload is fenced. Pair indices and topic names stay outside the
+  // fence — otherwise injected text could invent a "PAIR 7" and steer results.
+  const nonce = newNonce();
+  const allowedFactIds = new Set<number>();
   const topicBlocks = pairs.map((pair, idx) => {
     const factsA = (factsByTopic.get(pair.topicA) || []).slice(0, FACTS_PER_TOPIC_CAP);
     const factsB = (factsByTopic.get(pair.topicB) || []).slice(0, FACTS_PER_TOPIC_CAP);
-    return `--- PAIR ${idx + 1} ---\nTOPIC A: "${pair.topicA}"\nFacts:\n${factsA.map(f => `[${f.id}] ${f.entity}/${f.attribute}: ${f.statement}`).join('\n') || '(none)'}\n\nTOPIC B: "${pair.topicB}"\nFacts:\n${factsB.map(f => `[${f.id}] ${f.entity}/${f.attribute}: ${f.statement}`).join('\n') || '(none)'}`;
-  }).join('\n\n');
+    [...factsA, ...factsB].forEach(f => allowedFactIds.add(f.id));
+    const render = (facts: typeof factsA) =>
+      facts.map(f => `[${f.id}] ${f.entity}/${f.attribute}: ${f.statement}`).join('\n') || '(none)';
+    return `PAIR ${idx} — TOPIC A: ${JSON.stringify(pair.topicA)} · TOPIC B: ${JSON.stringify(pair.topicB)}\n` +
+      wrapUntrusted(`TOPIC A facts:\n${render(factsA)}\n\nTOPIC B facts:\n${render(factsB)}`, nonce);
+  });
+  const topicBlocksText = joinUntrusted(topicBlocks);
 
   try {
     const zai = await getZAI();
@@ -141,7 +159,9 @@ async function collideTopicsBatch(
       messages: [
         {
           role: 'system',
-          content: `You are the OneBrainer Dreamer — an associative thinking engine. You receive MULTIPLE pairs of topics and must find sparks and associations for EACH pair independently.
+          content: `${injectionGuard(nonce)}
+
+You are the OneBrainer Dreamer — an associative thinking engine. You receive MULTIPLE pairs of topics and must find sparks and associations for EACH pair independently.
 
 Output ONLY valid JSON:
 {
@@ -164,59 +184,52 @@ Rules:
         },
         {
           role: 'user',
-          content: `Process these ${pairs.length} topic pairs:\n\n${topicBlocks}`,
+          content: `Process these ${pairs.length} topic pairs:\n\n${topicBlocksText}`,
         },
       ],
       temperature: 0.7,
     });
 
-    const rawContent = response.choices?.[0]?.message?.content;
-    if (!rawContent) return { sparks: [], associations: [] };
-
-    let jsonStr = rawContent.trim();
-    const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenceMatch) jsonStr = fenceMatch[1].trim();
-
-    const result = JSON.parse(jsonStr);
-    const batchResults = result.results || [];
-
-    const validKinds = new Set<string>(SPARK_KINDS);
-    const validLabels = new Set<string>(VALID_LABELS);
+    // Schema validation replaces the hand-rolled filters below: enums, score
+    // clamping and per-pair caps are all enforced by DreamerBatchSchema.
+    const result = parseLLMJson(
+      response.choices?.[0]?.message?.content,
+      DreamerBatchSchema,
+      'dreamer.collide',
+    );
+    if (!result) return { sparks: [], associations: [] };
+    const batchResults = result.results;
 
     const allSparks: { insight: string; kind: string; score: number; seedRef: string; pairedRef: string; topicA: string; topicB: string }[] = [];
-    const allAssocs: { factA: number; factB: number; label: string; strength: number; description: string }[] = [];
+    const allAssocs: { factA: number; factB: number; label: string; strength: number; description: string | null }[] = [];
 
     for (const batchResult of batchResults) {
-      const pairIdx = batchResult.pairIndex ?? -1;
-      const pair = pairs[pairIdx];
+      const pair = pairs[batchResult.pairIndex];
       if (!pair) continue;
 
-      // Process sparks
-      const sparks = (batchResult.sparks || [])
-        .filter((s: { insight?: string; kind?: string; score?: number }) =>
-          s.insight && s.insight.length > 10 && !!s.kind && validKinds.has(s.kind) && typeof s.score === 'number'
-        )
-        .map((s: { insight: string; kind: string; score: number; seedFactId: number; pairedFactId: number }) => ({
+      // Sparks may only cite facts that were actually in this prompt.
+      const sparks = batchResult.sparks
+        .filter(s => allowedFactIds.has(s.seedFactId) && allowedFactIds.has(s.pairedFactId))
+        .map(s => ({
           insight: s.insight,
           kind: s.kind,
-          score: Math.min(Math.max(s.score, 0), 1),
-          seedRef: `facts:${s.seedFactId || 0}`,
-          pairedRef: `facts:${s.pairedFactId || 0}`,
+          score: s.score,
+          seedRef: `facts:${s.seedFactId}`,
+          pairedRef: `facts:${s.pairedFactId}`,
           topicA: pair.topicA,
           topicB: pair.topicB,
         }));
 
-      // Process associations
-      const associations = (batchResult.associations || [])
-        .filter((a: { factA?: number; factB?: number; label?: string }) =>
-          a.factA && a.factB && !!a.label && validLabels.has(a.label) && a.factA !== a.factB
-        )
-        .map((a: { factA: number; factB: number; label: string; strength: number; description: string }) => ({
+      // Same containment for associations — an id we never sent is discarded
+      // rather than written, which keeps cross-workspace links impossible.
+      const associations = batchResult.associations
+        .filter(a => a.factA !== a.factB && allowedFactIds.has(a.factA) && allowedFactIds.has(a.factB))
+        .map(a => ({
           factA: Math.min(a.factA, a.factB),
           factB: Math.max(a.factA, a.factB),
           label: a.label,
-          strength: Math.min(Math.max(a.strength || 0.5, 0.1), 1),
-          description: a.description || null,
+          strength: Math.min(Math.max(a.strength, 0.1), 1),
+          description: a.description ?? null,
         }));
 
       allSparks.push(...sparks);
@@ -225,7 +238,7 @@ Rules:
 
     return { sparks: allSparks, associations: allAssocs };
   } catch {
-    console.warn(`Dreamer batched LLM collision failed for ${pairs.length} pairs`);
+    logger.warn('Dreamer batched LLM collision failed', { pairs: pairs.length, workspaceId });
     return { sparks: [], associations: [] };
   }
 }

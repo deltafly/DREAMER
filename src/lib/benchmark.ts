@@ -14,6 +14,7 @@
 import { db } from '@/lib/db';
 import { executeBrainQuery, type BrainQueryResult } from '@/lib/brain-query';
 import { runLibrarian } from '@/lib/librarian';
+import { JudgeVerdictSchema, injectionGuard, newNonce, parseLLMJson, wrapUntrusted } from '@/lib/llm-safety';
 
 // ===== Types =====
 
@@ -118,6 +119,10 @@ async function judgeResult(
 ): Promise<JudgeVerdict> {
   const zai = await getZAI();
 
+  // Questions, expected answers and retrieved facts are all caller-supplied,
+  // so a benchmark run is itself an injection channel into the judge — a
+  // crafted question could otherwise talk the judge into scoring 1.0.
+  const nonce = newNonce();
   const factsText = facts.length === 0
     ? '(No facts returned)'
     : facts.map((r, i) => `${i + 1}. [${r.fact.topic}] ${r.fact.entity}/${r.fact.attribute}: ${r.fact.statement} (activation: ${r.activation})`).join('\n');
@@ -125,32 +130,31 @@ async function judgeResult(
   const response = await zai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: JUDGE_SYSTEM_PROMPT },
+      { role: 'system', content: `${injectionGuard(nonce)}\n\n${JUDGE_SYSTEM_PROMPT}` },
       {
         role: 'user',
-        content: `QUESTION: ${question}\n\nEXPECTED ANSWER: ${expectedAnswer}\n\nRETRIEVED FACTS:\n${factsText}`,
+        content:
+          `QUESTION:\n${wrapUntrusted(question, nonce)}\n\n` +
+          `EXPECTED ANSWER:\n${wrapUntrusted(expectedAnswer, nonce)}\n\n` +
+          `RETRIEVED FACTS:\n${wrapUntrusted(factsText, nonce)}`,
       },
     ],
     temperature: 0.0,
     max_tokens: 300,
   });
 
-  const content = response.choices?.[0]?.message?.content?.trim();
-  if (!content) return { correct: false, score: 0, reason: 'Judge returned empty response' };
+  const verdict = parseLLMJson(
+    response.choices?.[0]?.message?.content,
+    JudgeVerdictSchema,
+    'benchmark.judge',
+  );
+  if (!verdict) return { correct: false, score: 0, reason: 'Judge response failed validation' };
 
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return { correct: false, score: 0, reason: 'Judge returned invalid JSON' };
-
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    return {
-      correct: !!parsed.correct,
-      score: typeof parsed.score === 'number' ? Math.max(0, Math.min(1, parsed.score)) : 0,
-      reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : 'No reason given',
-    };
-  } catch {
-    return { correct: false, score: 0, reason: 'Judge JSON parse failed' };
-  }
+  return {
+    correct: verdict.correct,
+    score: verdict.score,
+    reason: verdict.reason || 'No reason given',
+  };
 }
 
 // ===== Main Benchmark Runner =====

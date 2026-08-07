@@ -20,13 +20,36 @@ are documented in [`CHANGELOG.md`](./CHANGELOG.md) under `[5.2.0]`. Key controls
 - CSP headers, 1 MB request body cap, Zod validation on all inputs
 - Audit logging across 10 sensitive event types
 
-### Known open issue
+### Prompt injection — mitigated, not eliminated
 
-**Prompt injection in the Librarian extraction path.** The Librarian ingests arbitrary
-user-supplied text (L1 ledger entries) and passes it to an LLM for structured extraction.
-A crafted entry can influence extraction output. Mitigation is on the roadmap; until then,
-treat ingested content as untrusted and do not grant the extraction pipeline privileged
-side effects.
+L1 ledger content is fully attacker-controlled: anyone who can reach `POST /api/ledger`
+or the MCP `ingest` tool supplies text that the Librarian hands to an LLM. Extracted
+facts are attacker-influenced in turn and get re-sent to the model by the
+auto-associator and the Dreamer, so one poisoned entry reaches three model calls.
+
+`src/lib/llm-safety.ts` applies two independent layers to every such call:
+
+1. **Unforgeable fencing.** Untrusted text is wrapped between markers carrying a
+   128-bit random nonce generated per call. Static delimiters are useless here — the
+   attacker can simply type them — so the nonce is what makes the boundary real. Any
+   marker-shaped text inside the payload is neutralised, and trusted metadata (entry
+   ids, topics, pair indices) is kept outside the fence so it cannot be forged from
+   within the content.
+2. **Schema containment.** Every response is validated against a strict Zod schema
+   before a single row is written: closed enums, per-field length caps, and array caps
+   (50 facts, 25 decisions, 10 associations, 3 sparks per pair). A reply that misses the
+   contract is discarded whole — the Librarian falls back to heuristic extraction. Fact
+   ids the model did not receive are rejected, which also makes cross-workspace
+   associations impossible.
+
+Layer 2 is the one that matters: even a fully compromised model cannot write outside
+the schema. Coverage is in `test/llm-safety.test.ts` (20 checks, enforced in CI).
+
+**What remains.** This bounds the blast radius; it does not eliminate the risk. An
+attacker can still influence *which* well-formed facts get extracted — a plausible but
+false fact can be pushed into the knowledge base, and briefs assembled from it are read
+by downstream agents. Review disputes and treat extracted knowledge as attributable to
+its source (`Fact.source` carries the originating ledger ids), not as ground truth.
 
 ### Not in scope
 

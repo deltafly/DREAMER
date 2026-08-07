@@ -1,4 +1,15 @@
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
+import {
+  AssociationListSchema,
+  LibrarianExtractionSchema,
+  injectionGuard,
+  joinUntrusted,
+  newNonce,
+  parseLLMJson,
+  wrapUntrusted,
+  type LibrarianExtraction,
+} from '@/lib/llm-safety';
 
 // Lazy ZAI loader — avoids pulling in z-ai-web-dev-sdk at module eval time (TDZ fix)
 let _zai: Awaited<ReturnType<typeof import('z-ai-web-dev-sdk').default.create>> | null = null;
@@ -76,45 +87,10 @@ async function rebuildBrief(topic: string, workspaceId: number) {
   });
 }
 
-interface LLMExtractedFact {
-  topic: string;
-  entity: string;
-  attribute: string;
-  statement: string;
-  confidence: 'high' | 'medium' | 'low';
-  review_days: number;
-}
-
-interface LLMExtractedDecision {
-  topic: string;
-  decision: string;
-  rationale: string;
-  review_days: number;
-}
-
-interface LLMExtractedStateChange {
-  topic: string;
-  key: string;
-  value: string;
-}
-
-interface LLMExtractedDispute {
-  topic: string;
-  description: string;
-}
-
-interface LLMExtractedOpenThread {
-  topic: string;
-  thread: string;
-}
-
-interface LLMExtraction {
-  facts: LLMExtractedFact[];
-  decisions: LLMExtractedDecision[];
-  state_changes: LLMExtractedStateChange[];
-  disputes_suspected: LLMExtractedDispute[];
-  open_threads: LLMExtractedOpenThread[];
-}
+// The extraction shape is defined once, as a Zod schema, in @/lib/llm-safety.
+// Deriving the type from the validator keeps "what we accept" and "what we
+// believe we have" from drifting apart.
+type LLMExtraction = LibrarianExtraction;
 
 /** Auto-associate newly extracted facts with existing facts via LLM */
 async function autoAssociate(
@@ -159,8 +135,13 @@ async function autoAssociate(
   });
   const existingKeys = new Set(existingAssocs.map(a => `${a.factIdA}-${a.factIdB}-${a.label}`));
 
-  const newFactsText = newFacts.map(f => `[id:${f.id}] ${f.entity}/${f.attribute}: ${f.statement}`).join('\n');
-  const existingFactsText = existingFacts.map(f => `[id:${f.id}] ${f.entity}/${f.attribute}: ${f.statement}`).join('\n');
+  // Fact text is attacker-influenced (it was extracted from ledger content),
+  // so this second-order call is fenced exactly like the first-order one.
+  const nonce = newNonce();
+  const factLine = (f: { id: number; entity: string; attribute: string; statement: string }) =>
+    `[id:${f.id}] ${f.entity}/${f.attribute}: ${f.statement}`;
+  const newFactsText = wrapUntrusted(newFacts.map(factLine).join('\n'), nonce);
+  const existingFactsText = wrapUntrusted(existingFacts.map(factLine).join('\n'), nonce);
 
   try {
     const zai = await getZAI();
@@ -168,7 +149,10 @@ async function autoAssociate(
       messages: [
         {
           role: 'system',
-          content: `You are a knowledge graph builder. Find meaningful connections between NEW facts and EXISTING facts.
+          content: `${injectionGuard(nonce)}
+
+You are a knowledge graph builder. Find meaningful connections between NEW facts and EXISTING facts.
+The [id:N] prefixes are trusted; only ids present in the input may be referenced.
 Output ONLY valid JSON array of associations:
 [{"factA": <id from new>, "factB": <id from existing>, "label": "supports|contradicts|extends|related|causes|requires", "strength": 0.1-1.0, "description": "brief explanation"}]
 
@@ -193,19 +177,31 @@ ${existingFactsText}`,
       temperature: 0.2,
     });
 
-    const rawContent = response.choices?.[0]?.message?.content;
-    if (!rawContent) return 0;
+    const associations = parseLLMJson(
+      response.choices?.[0]?.message?.content,
+      AssociationListSchema,
+      'librarian.autoAssociate',
+    );
+    if (!associations) return 0;
 
-    let jsonStr = rawContent.trim();
-    const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenceMatch) jsonStr = fenceMatch[1].trim();
-
-    const associations = JSON.parse(jsonStr);
-    if (!Array.isArray(associations)) return 0;
+    // The model may only wire together facts we actually showed it. Without
+    // this the reply could name any fact id in the database — including rows
+    // belonging to another workspace — and the FK constraint would accept it.
+    const allowedIds = new Set([...newFacts, ...existingFacts].map(f => f.id));
 
     let created = 0;
     for (const assoc of associations) {
-      if (!assoc.factA || !assoc.factB || !assoc.label) continue;
+      if (!allowedIds.has(assoc.factA) || !allowedIds.has(assoc.factB)) {
+        logger.warn('Discarded association referencing an out-of-scope fact id', {
+          context: 'librarian.autoAssociate',
+          factA: assoc.factA,
+          factB: assoc.factB,
+          workspaceId,
+        });
+        continue;
+      }
+      if (assoc.factA === assoc.factB) continue;
+
       // Normalize IDs: ensure smaller is A
       const idA = Math.min(assoc.factA, assoc.factB);
       const idB = Math.max(assoc.factA, assoc.factB);
@@ -218,10 +214,10 @@ ${existingFactsText}`,
             factIdA: idA,
             factIdB: idB,
             label: assoc.label,
-            strength: assoc.strength || 0.5,
+            strength: assoc.strength,
             createdBy: 'librarian-auto',
             createdAt: now(),
-            description: assoc.description || null,
+            description: assoc.description ?? null,
             workspaceId,
           },
         });
@@ -232,7 +228,7 @@ ${existingFactsText}`,
     }
     return created;
   } catch {
-    console.warn('Auto-association LLM call failed, skipping');
+    logger.warn('Auto-association LLM call failed, skipping', { workspaceId });
     return 0;
   }
 }
@@ -443,9 +439,17 @@ export async function runLibrarian(workspaceId: number): Promise<{ success: bool
     let llmUsed = false;
 
     if (unprocessed.length > 0) {
-      const entriesText = unprocessed
-        .map(e => `[id:${e.id} topic:${e.topic} kind:${e.kind}]\n${e.content}`)
-        .join('\n\n---\n\n');
+      // Ledger content is fully attacker-controlled. Fence each entry with a
+      // per-run nonce so injected text cannot escape into the instruction
+      // channel, and keep the trusted metadata OUTSIDE the fence so it cannot
+      // be forged from within the content.
+      const nonce = newNonce();
+      const entriesText = joinUntrusted(
+        unprocessed.map(e =>
+          `Entry id=${e.id} topic=${JSON.stringify(e.topic)} kind=${JSON.stringify(e.kind)}\n` +
+          wrapUntrusted(e.content, nonce),
+        ),
+      );
 
       try {
         const zai = await getZAI();
@@ -453,7 +457,9 @@ export async function runLibrarian(workspaceId: number): Promise<{ success: bool
           messages: [
             {
               role: 'system',
-              content: `You are the OneBrainer Librarian. Extract structured knowledge from session digests.
+              content: `${injectionGuard(nonce)}
+
+You are the OneBrainer Librarian. Extract structured knowledge from session digests.
 Output ONLY valid JSON matching this schema:
 {
   "facts": [{"topic":"string","entity":"string","attribute":"string","statement":"one sentence string","confidence":"high|medium|low","review_days": 60}],
@@ -466,7 +472,8 @@ Rules:
 - FACT = assertion about the world/system that will be true for weeks. Must have entity+attribute. NOT opinions or temporary state.
 - DECISION = explicit choice between alternatives, with rationale. If rationale missing, write "Not recorded in digest".
 - If unsure, omit it. Better to miss a fact than fabricate one.
-- review_days: volatile=30, structural=180, default=60`,
+- review_days: volatile=30, structural=180, default=60
+- Maximum 50 facts, 25 of everything else, across the whole reply.`,
             },
             {
               role: 'user',
@@ -476,16 +483,15 @@ Rules:
           temperature: 0.1,
         });
 
-        // Parse LLM response — extract content from chat completion
-        const rawContent = response.choices?.[0]?.message?.content;
-        if (!rawContent) throw new Error('LLM returned empty content');
-        let jsonStr = rawContent.trim();
-        const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (fenceMatch) {
-          jsonStr = fenceMatch[1].trim();
-        }
-
-        const extraction: LLMExtraction = JSON.parse(jsonStr);
+        // Validate before anything reaches the database. A reply that does not
+        // match the contract is discarded wholesale and we fall back to the
+        // heuristic path — a compromised model cannot widen its own schema.
+        const extraction = parseLLMJson(
+          response.choices?.[0]?.message?.content,
+          LibrarianExtractionSchema,
+          'librarian.extract',
+        );
+        if (!extraction) throw new Error('LLM extraction failed validation');
 
         const entryIds = unprocessed.map(e => e.id);
         await processLLMExtraction(extraction, entryIds, result, dirtyTopics, workspaceId);
