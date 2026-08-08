@@ -1,8 +1,17 @@
 import { db } from '@/lib/db';
 import { z } from 'zod';
+import { TABLES } from '@/lib/sql-tables';
+import { logger } from '@/lib/logger';
+import { embedOne, embeddingsEnabled } from '@/lib/embeddings';
+import { semanticSeeds } from '@/lib/fact-vectors';
 
 // ===== Configuration =====
 const SEED_ASSOCIATION_BATCH = 200; // max associations to load per batch
+
+// Raw SQL below names its tables as text — see src/lib/sql-tables.ts for why
+// these are constants rather than literals.
+const FACT_TABLE = TABLES.fact;
+const ASSOCIATION_TABLE = TABLES.association;
 
 // ===== Input Schema =====
 const BrainQueryInput = z.object({
@@ -36,6 +45,22 @@ export interface BrainQueryResult {
     iterations: number;
     activationThreshold: number;
     lazyLoaded: boolean;
+  };
+  /**
+   * How the seed set was built. Reported rather than assumed: whether the
+   * semantic path actually contributed is the difference between measuring
+   * hybrid retrieval and measuring keyword retrieval with extra steps.
+   */
+  seeding: {
+    strategy: 'keyword' | 'hybrid';
+    keywordSeeds: number;
+    /** Seeds found by meaning, including ones the keyword pass also found. */
+    semanticSeeds: number;
+    /** Seeds the keyword pass alone would have missed entirely. */
+    semanticOnlySeeds: number;
+    vectorsScanned: number;
+    /** Set when the semantic path was configured but did not run. */
+    semanticError?: string;
   };
 }
 
@@ -197,7 +222,7 @@ export async function executeBrainQuery(
     // character allow-list, and `workspaceId` is a number resolved by getWorkspaceId().
     // Prisma cannot parameterise a variable-length OR/LIKE chain, hence the raw call.
     const rows = await db.$queryRawUnsafe<{ id: number }[]>(
-      `SELECT id FROM facts WHERE supersededBy IS NULL AND stale = 0 AND workspaceId = ${workspaceId} AND (${kwConditions}) LIMIT 200`
+      `SELECT id FROM ${FACT_TABLE} WHERE supersededBy IS NULL AND stale = 0 AND workspaceId = ${workspaceId} AND (${kwConditions}) LIMIT 200`
     );
     seedFactIds = rows.map(r => r.id);
   }
@@ -259,6 +284,71 @@ export async function executeBrainQuery(
       const normalizedActivation = Math.min(score / 10, 1.0);
       activation.set(fact.id, normalizedActivation);
       seedReasons.set(fact.id, reasons);
+    }
+  }
+
+  const keywordSeedCount = seedReasons.size;
+
+  // === PHASE 1b: SEMANTIC SEEDING (optional) ===
+  // The keyword pass above is exact and blind: it cannot match a fact that says
+  // the same thing in different words, and because seeding happens *before*
+  // spreading, the graph never gets a chance to recover what was never lit.
+  // When embeddings are configured, a second pass seeds by meaning and the two
+  // sets are merged. Keyword matches are kept as they are — a shared term is
+  // stronger evidence than a close vector, and this is exactly what embeddings
+  // are worst at.
+  const seeding: BrainQueryResult['seeding'] = {
+    strategy: 'keyword',
+    keywordSeeds: keywordSeedCount,
+    semanticSeeds: 0,
+    semanticOnlySeeds: 0,
+    vectorsScanned: 0,
+  };
+
+  if (embeddingsEnabled()) {
+    try {
+      const queryVector = await embedOne(context, 'brain.query');
+      const { seeds, scanned, truncated } = await semanticSeeds(workspaceId, queryVector, limit * 3);
+
+      seeding.strategy = 'hybrid';
+      seeding.semanticSeeds = seeds.length;
+      seeding.vectorsScanned = scanned;
+      if (truncated) {
+        seeding.semanticError = `Only the first ${scanned} vectors were compared`;
+      }
+
+      await loadFacts(seeds.map(s => s.factId));
+
+      for (const seed of seeds) {
+        const fact = factMap.get(seed.factId);
+        if (!fact) continue;
+
+        const reason =
+          `Semantically close to the query (similarity ${seed.similarity.toFixed(3)})`;
+
+        if (seedReasons.has(seed.factId)) {
+          // Found both ways. Keep the stronger signal rather than adding them:
+          // agreement between two seed methods is not twice the evidence.
+          const existing = activation.get(seed.factId) ?? 0;
+          if (seed.activation > existing) activation.set(seed.factId, seed.activation);
+          seedReasons.get(seed.factId)!.push(reason);
+        } else {
+          seeding.semanticOnlySeeds++;
+          activation.set(seed.factId, seed.activation);
+          seedReasons.set(seed.factId, [reason]);
+        }
+      }
+
+      await loadAssociationsFor(seeds.map(s => s.factId));
+    } catch (error) {
+      // Degrade to keyword-only rather than failing the query. The caller gets
+      // a usable answer and `seeding` says plainly that it is the narrower one.
+      const message = error instanceof Error ? error.message : String(error);
+      seeding.semanticError = message;
+      logger.warn('Semantic seeding unavailable — falling back to keyword seeding', {
+        workspaceId,
+        error: message,
+      });
     }
   }
 
@@ -382,7 +472,7 @@ export async function executeBrainQuery(
       // in this function (association ids, clamped float weights, an ISO timestamp).
       // Raw is used to collapse an N+1 update into a single batched CASE statement.
       await db.$executeRawUnsafe(
-        `UPDATE associations SET activationWeight = CASE id ${cases} END, fireCount = fireCount + 1, lastFiredAt = '${timestamp}' WHERE id IN (${ids})`
+        `UPDATE ${ASSOCIATION_TABLE} SET activationWeight = CASE id ${cases} END, fireCount = fireCount + 1, lastFiredAt = '${timestamp}' WHERE id IN (${ids})`
       );
     }
   }
@@ -396,7 +486,7 @@ export async function executeBrainQuery(
     // RAW SQL 3/3 — safe by construction: fact ids and activation floats are both computed
     // internally. Same rationale as above — one batched CASE instead of N updates.
     await db.$executeRawUnsafe(
-      `UPDATE facts SET activationScore = CASE id ${factCases} END, lastActivatedAt = '${timestamp}' WHERE id IN (${factIds})`
+      `UPDATE ${FACT_TABLE} SET activationScore = CASE id ${factCases} END, lastActivatedAt = '${timestamp}' WHERE id IN (${factIds})`
     );
   }
 
@@ -449,5 +539,6 @@ export async function executeBrainQuery(
       activationThreshold,
       lazyLoaded: true,
     },
+    seeding,
   };
 }

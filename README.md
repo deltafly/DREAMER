@@ -220,6 +220,11 @@ The Brain implements **spreading activation** over the Fact-Association graph �
    `topic`, `entity`, `attribute` or `statement` contains at least one keyword (capped at 200 seeds).
    Seeds are scored by where the match landed — topic ×3, entity ×2, attribute ×1, plus one point
    per statement hit — then normalised to `min(score / 10, 1.0)`.
+2b. **Semantic seeding** *(optional, off unless `EMBEDDING_MODEL` is set)*: the query is embedded
+   once and compared against the stored fact vectors. Matches above a floor (0.25 cosine) are
+   rescaled onto the same 0–1 activation scale and merged into the seed set; where both passes
+   found the same fact, the stronger signal wins rather than the two being added together.
+   See [Semantic seeding](#semantic-seeding-optional).
 3. **Spreading activation** (iterative, default 3 iterations):
    - Neighbour activation += `source_activation × association.activationWeight × 0.3` (decay)
    - Facts and associations are **lazy-loaded** per iteration — only the activated
@@ -262,13 +267,61 @@ Rate limited to 20 requests/minute.
     "iterations": 3,
     "activationThreshold": 0.05,
     "lazyLoaded": true
+  },
+  "seeding": {
+    "strategy": "hybrid",
+    "keywordSeeds": 4,
+    "semanticSeeds": 7,
+    "semanticOnlySeeds": 5,
+    "vectorsScanned": 218
   }
 }
 ```
 
-> **Not implemented yet**: LLM-based query expansion before seeding (see [Roadmap](#roadmap)).
-> Seeding today is purely lexical, which is also why fact-level embeddings are the next
-> planned step.
+`seeding` reports how the seed set was actually built, including
+`semanticOnlySeeds` — the facts the keyword pass alone would have missed. Without
+that number there is no way to tell a hybrid query from a hybrid query whose
+embedding call quietly failed, and both would be reported as "hybrid".
+
+> **Not implemented**: LLM-based query expansion before seeding (see [Roadmap](#roadmap)).
+> Query expansion and semantic seeding solve the same problem from opposite ends;
+> embeddings turned out to be both cheaper and less blind, so expansion is unlikely
+> to be built.
+
+#### Semantic seeding (optional)
+
+Seeding happens *before* spreading, and the graph cannot return what was never
+seeded. So the weakness of a purely lexical seed is not that it ranks badly — it
+is that a fact phrased differently never enters the network at all, and neither
+does anything associated with it. Ask about "the payment provider" and a fact
+that says "Barion" stays dark, along with its whole neighbourhood.
+
+Setting `EMBEDDING_MODEL` gives every fact a vector, so a query can also seed by
+meaning. Both passes run and are merged — keyword matches keep their weight,
+because an exact shared term is the one thing embeddings are worst at.
+
+Deliberate properties:
+
+- **Optional.** Unset, the query behaves exactly as it did before. No key is
+  needed to see the system work, and the default clone costs nothing to run.
+- **Cheap.** Only the distilled L2 fact layer is embedded — one sentence each,
+  once, when written. A query costs one vector, not a scan of your history.
+- **Local.** Any OpenAI-compatible `/embeddings` endpoint serves it, including an
+  Ollama on `localhost`. Configured separately from the completion provider, so
+  the Librarian can run on Claude while the vectors run on your own machine.
+- **Private.** The raw ledger is never embedded. Only curated facts are.
+- **Reversible.** Vectors are fingerprinted with their source text and model, so
+  editing a fact or switching models re-embeds rather than silently answering
+  from a vector for a sentence that no longer exists.
+
+```bash
+EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_BASE_URL=http://localhost:11434/v1
+```
+
+The Librarian keeps vectors current on every run. For a knowledge base that
+predates the setting, backfill with `POST /api/brain/embeddings` and check
+coverage with `GET /api/brain/embeddings`.
 
 **Other Brain endpoints**:
 - `GET /api/brain/graph` — Export the full association graph for visualization
@@ -413,6 +466,10 @@ onebrainer/
 │       ├── password.ts            # Shared Zod password schema (Hungarian rules)
 │       ├── env.ts                 # Startup env validation
 │       ├── db.ts                  # Prisma client singleton
+│       ├── time.ts                # Canonical timestamp parsing and formatting
+│       ├── sql-tables.ts          # Physical table names for the raw statements
+│       ├── embeddings.ts          # Optional embedding provider + vector maths
+│       ├── fact-vectors.ts        # Vector storage, backfill, semantic seeding
 │       ├── brain-query.ts         # Spreading activation query engine
 │       ├── brain-graph.ts         # Graph export for visualization
 │       ├── brain-insights.ts      # Self-generated observations
@@ -543,6 +600,8 @@ All 51 API routes use structured JSON responses via `withHandler()`:
 | GET | `/api/brain/insights` | Required | Brain-generated observations |
 | GET | `/api/brain/gaps` | Required | Knowledge gap analysis |
 | POST | `/api/brain/plasticity` | Required | Manual Hebbian weight adjustment |
+| GET | `/api/brain/embeddings` | Required | Semantic seed coverage (facts vs. embedded) |
+| POST | `/api/brain/embeddings` | Required | Backfill missing or outdated fact vectors |
 
 ### Librarian
 | Method | Route | Auth | Description |
@@ -950,14 +1009,17 @@ outside that file needs to change.
 - [x] Benchmark harness (LongMemEval-style)
 - [x] Contest system
 - [x] Full security audit (17 findings fixed)
+- [x] Optional fact-level embeddings for hybrid seeding (semantic + keyword)
+- [x] Backdatable ledger entries, so imported history keeps its real timeline
 
 ### Planned
-- [ ] **Phase A**: LLM query expansion before keyword seeding (designed, not yet built)
 - [ ] **Structured outputs** on the Anthropic adapter (`output_config.format`) instead of
       parsing JSON out of free text — the uniform text contract is what keeps the
       adapters interchangeable today
 - [ ] Broaden test coverage to the extraction and query pipelines (needs a test database)
-- [ ] **Phase C**: Fact-level embeddings for hybrid seed (semantic + keyword)
+- [ ] Measure the hybrid seed against the keyword seed on the same question set —
+      `seeding.semanticOnlySeeds` makes the contribution visible per query, but a
+      published number needs a full run
 - [ ] Real-time WebSocket notifications
 - [ ] File/document ingestion (PDF, DOCX, Markdown)
 - [ ] Multi-language support (i18n)
@@ -984,5 +1046,8 @@ reasoning quietly evaporates?*
 The design bet is that **memory quality is decided at write time, not at read time** —
 a curated L2 layer written by a single authority (the Librarian) beats a large pile of
 embeddings searched at query time. Everything else in this repo follows from that bet.
+
+Embeddings are optional here for the same reason: they seed a query, they do not
+decide what is worth remembering. That decision stays at write time.
 
 Feedback, criticism and issues are welcome.

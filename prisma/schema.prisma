@@ -47,6 +47,7 @@ model Workspace {
   insights  Insight[]
   brainQueries BrainQuery[]
   neuralActivity NeuralActivity[]
+  factEmbeddings FactEmbedding[]
   contestEntries ContestEntry[]
   achievements  Achievement[]
   settings      WorkspaceSettings?
@@ -111,9 +112,41 @@ model Fact {
 
   linksA Association[] @relation("LinkA")
   linksB Association[] @relation("LinkB")
+  embedding FactEmbedding?
 
   @@index([workspaceId])
   @@index([workspaceId, topic])
+}
+
+/// Optional semantic vector for a fact, used to seed the brain query with
+/// evidence that matches by meaning rather than by shared words.
+///
+/// Only the L2 layer is embedded. Facts are the distilled layer — one short
+/// sentence each — so embedding them is a small batch job, not a per-query
+/// cost, and the raw ledger is never sent anywhere.
+///
+/// The table is empty unless EMBEDDING_MODEL is configured. Nothing requires
+/// it: with no rows the query falls back to keyword seeding.
+model FactEmbedding {
+  factId      Int      @id
+  workspaceId Int
+  /// Which model produced the vector. Vectors from different models are not
+  /// comparable, so a model change invalidates every row.
+  model       String
+  dim         Int
+  /// Float32 little-endian, L2-normalised, so cosine similarity is a dot product.
+  vector      Bytes
+  /// Hash of the embedded text and the model name. Lets a re-run tell an
+  /// out-of-date vector from a current one without re-embedding to compare.
+  fingerprint String
+  createdAt   String
+
+  fact      Fact      @relation(fields: [factId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([workspaceId, model])
+  @@map("fact_embeddings")
 }
 
 // ===== L2: Decisions — with calibration loop =====

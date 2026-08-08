@@ -181,11 +181,68 @@ Neurális keresés spreading activationnel és Hebbian tanulással.
     "hebbianUpdates": 2,
     "iterations": 3,
     "activationThreshold": 0.05
+  },
+  "seeding": {
+    "strategy": "hybrid",
+    "keywordSeeds": 2,
+    "semanticSeeds": 4,
+    "semanticOnlySeeds": 3,
+    "vectorsScanned": 218
   }
 }
 ```
 
+**`seeding` — hogyan állt össze a kiindulási halmaz.** A seed *megelőzi* a
+propagációt, tehát amit nem seedeltünk, azt a gráf sem hozza vissza.
+
+| Mező | Leírás |
+|------|--------|
+| `strategy` | `keyword` (alapértelmezett) vagy `hybrid`, ha `EMBEDDING_MODEL` be van állítva |
+| `keywordSeeds` | Szóegyezéssel talált seed-ek |
+| `semanticSeeds` | Jelentés alapján talált seed-ek (a kulcsszavasan is meglévőkkel együtt) |
+| `semanticOnlySeeds` | Amit **csak** a szemantikus ág talált meg — ez a hibrid seed tényleges hozama |
+| `vectorsScanned` | Összehasonlított vektorok száma |
+| `semanticError` | Csak ha a szemantikus ág be volt kapcsolva, de nem futott le |
+
+A `semanticError` nem hiba-válasz: a query lefut kulcsszavas seeddel, a mező
+pedig kimondja, hogy a szűkebb változatot kaptad. Ez tudatos — enélkül nem
+lehetne megkülönböztetni a hibrid keresést a „hibrid keresés, ami valójában
+kulcsszavas volt" esettől.
+
 **Mellékhatás**: Hebbian learning (súly frissítés), BrainQuery naplózás, NeuralActivity rögzítés.
+
+---
+
+### `GET /api/brain/embeddings`
+
+Szemantikus seed lefedettség: hány élő tény van, és hányhoz tartozik érvényes vektor.
+
+**Auth**: Dev: nem kötelező · Prod: kötelező
+
+**Válasz**: `{ enabled, provider, facts, embedded, pending, seeding }`
+
+---
+
+### `POST /api/brain/embeddings`
+
+Hiányzó vagy elavult fact-vektorok pótlása.
+
+**Auth**: Dev: nem kötelező · Prod: kötelező
+
+**Request body**: `{ "limit": 200 }` (opcionális, 1–500)
+
+A Librarian minden futásnál magától karbantartja a vektorokat, úgyhogy ez a
+végpont két esetre való: (1) a szemantikus ág bekapcsolása egy már meglévő
+tudásbázison, (2) embedding-modell váltása, ami egy csapásra minden eltárolt
+vektort érvénytelenít. Ismételd, amíg a `pending` nullára fut.
+
+**Task lock**: Igen — a `librarian` lockot használja, hogy ne versenyezzen a
+Librarian saját szinkronjával. Ha a Librarian éppen fut: 409.
+
+**Rate limit**: 10 kérés / perc (minden hívás külső endpointot terhel).
+
+`EMBEDDING_MODEL` nélkül nem hiba, hanem `enabled: false` és egy üzenet arról,
+mit kell beállítani.
 
 ---
 
@@ -300,9 +357,22 @@ Ledger bejegyzések listázása.
   "topic": "backend",
   "content": "{\"type\": \"digest\", ...}",
   "kind": "digest",
-  "agentId": "claude-4"
+  "agentId": "claude-4",
+  "ts": "2025-01-15 14:30"
 }
 ```
+
+**`ts` — mikor történt (opcionális).** Kihagyva a bejegyzés a beérkezés
+pillanatával kap időbélyeget. Megadva korábbi anyag is betölthető hitelesen:
+a ledger az az idővonal, amire az egész rendszer épít — a `Fact.validFrom`
+ebből származik, a supersede-lánc pedig ezt a sorrendet olvassa vissza, amikor
+eldönti, melyik tény váltott le melyiket. Archívumot a fali órával bélyegezni
+annyi, mint az egész előzményt egyetlen pillanatba lapítani.
+
+Elfogadott formák: `2025-01-15`, `2025-01-15 14:30`, `2025-01-15 14:30:45`,
+illetve ISO 8601 (`2025-01-15T14:30:45Z`, offsettel is). **Zónajelölés nélkül
+a rendszer UTC-ként értelmezi**, nem a szerver helyi idejeként. 24 óránál
+távolabbi jövőbeli időbélyeget elutasít (400).
 
 ---
 

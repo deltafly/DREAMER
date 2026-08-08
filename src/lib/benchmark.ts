@@ -17,6 +17,7 @@ import { executeBrainQuery, type BrainQueryResult } from '@/lib/brain-query';
 import { runLibrarian } from '@/lib/librarian';
 import { complete } from '@/lib/llm-client';
 import { JudgeVerdictSchema, injectionGuard, newNonce, parseLLMJson, wrapUntrusted } from '@/lib/llm-safety';
+import { normalizeTimestamp, now } from '@/lib/time';
 
 // ===== Types =====
 
@@ -48,8 +49,14 @@ export interface QuestionResult {
   factsReturned: number;
   seedFacts: number;
   spreadFacts: number;
-  expansionEnabled: boolean;
-  expansionSucceeded: boolean;
+  /**
+   * How this question's seed set was built.
+   *
+   * Reported per question rather than assumed for the run, because it is the
+   * difference between measuring hybrid retrieval and measuring keyword
+   * retrieval with an embedding call that quietly failed.
+   */
+  seeding: BrainQueryResult['seeding'];
   topStatements: string[]; // top 5 fact statements for debugging
   judgeVerdict: JudgeVerdict;
   timingMs: {
@@ -79,10 +86,22 @@ export interface BenchmarkReport {
     correct: number;
     avgScore: number;
     byType: Record<string, { total: number; correct: number; avgScore: number }>;
+    /**
+     * What the seeding layer actually did across the run.
+     *
+     * `questionsWithSemanticOnlySeeds` is the honest measure of what the
+     * semantic path contributed: questions where it surfaced evidence the
+     * keyword pass could not have found at all. A hybrid run where that number
+     * is zero scored the same as a keyword run, whatever the strategy says.
+     */
+    seeding: {
+      strategy: 'keyword' | 'hybrid' | 'mixed';
+      questionsWithSemanticOnlySeeds: number;
+      totalSemanticOnlySeeds: number;
+      questionsWithSemanticError: number;
+    };
   };
 }
-
-const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
 // ===== Judge =====
 
@@ -161,7 +180,18 @@ export async function runBenchmark(
     startedAt: startTime,
     ingestion: { sessions: 0, ledgerEntries: 0, librarianFacts: 0, librarianDecisions: 0, librarianAssociations: 0, librarianMs: 0 },
     results: [],
-    summary: { total: questions.length, correct: 0, avgScore: 0, byType: {} },
+    summary: {
+      total: questions.length,
+      correct: 0,
+      avgScore: 0,
+      byType: {},
+      seeding: {
+        strategy: 'keyword',
+        questionsWithSemanticOnlySeeds: 0,
+        totalSemanticOnlySeeds: 0,
+        questionsWithSemanticError: 0,
+      },
+    },
   };
 
   try {
@@ -169,9 +199,19 @@ export async function runBenchmark(
     let totalEntries = 0;
     for (const q of questions) {
       for (const session of q.evidenceSessions) {
+        // Backdating is the whole point of the evidence timeline, so a session
+        // the harness cannot date is a broken question set, not something to
+        // paper over with the wall clock — the temporal questions would score
+        // against a timeline that never existed.
+        const sessionTs = normalizeTimestamp(session.ts);
+        if (!sessionTs) {
+          throw new Error(
+            `Question ${q.id}: evidence session timestamp "${session.ts}" is not a valid date`,
+          );
+        }
         await db.ledger.create({
           data: {
-            ts: session.ts.replace('T', ' ').padEnd(19, '0').slice(0, 19),
+            ts: sessionTs,
             topic: session.topic,
             content: session.content,
             kind: session.kind || 'digest',
@@ -214,8 +254,7 @@ export async function runBenchmark(
         factsReturned: queryResult.results.length,
         seedFacts: queryResult.neural.seedFacts,
         spreadFacts: queryResult.neural.spreadFacts,
-        expansionEnabled: queryResult.neural.lazyLoaded,
-        expansionSucceeded: queryResult.neural.lazyLoaded,
+        seeding: queryResult.seeding,
         topStatements: queryResult.results.slice(0, 5).map(r => r.fact.statement),
         judgeVerdict: verdict,
         timingMs: { query: queryMs, judge: judgeMs },
@@ -228,6 +267,8 @@ export async function runBenchmark(
     let totalScore = 0;
     const byType: Record<string, { total: number; correct: number; totalScore: number }> = {};
 
+    const strategies = new Set<string>();
+
     for (const r of report.results) {
       if (r.judgeVerdict.correct) correct++;
       totalScore += r.judgeVerdict.score;
@@ -236,7 +277,22 @@ export async function runBenchmark(
       byType[r.type].total++;
       if (r.judgeVerdict.correct) byType[r.type].correct++;
       byType[r.type].totalScore += r.judgeVerdict.score;
+
+      strategies.add(r.seeding.strategy);
+      if (r.seeding.semanticOnlySeeds > 0) {
+        report.summary.seeding.questionsWithSemanticOnlySeeds++;
+        report.summary.seeding.totalSemanticOnlySeeds += r.seeding.semanticOnlySeeds;
+      }
+      if (r.seeding.semanticError) report.summary.seeding.questionsWithSemanticError++;
     }
+
+    // 'mixed' means the semantic path worked for some questions and not others,
+    // which makes the aggregate score a blend of two different systems. Worth
+    // seeing in the summary rather than discovering per question.
+    report.summary.seeding.strategy =
+      strategies.size <= 1
+        ? (([...strategies][0] as 'keyword' | 'hybrid') ?? 'keyword')
+        : 'mixed';
 
     report.summary.correct = correct;
     report.summary.avgScore = report.results.length > 0 ? Math.round((totalScore / report.results.length) * 1000) / 1000 : 0;

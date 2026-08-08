@@ -11,6 +11,7 @@ import {
   wrapUntrusted,
   type LibrarianExtraction,
 } from '@/lib/llm-safety';
+import { syncFactEmbeddings } from '@/lib/fact-vectors';
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const daysFromNow = (d: number) => {
@@ -297,12 +298,31 @@ async function heuristicExtraction(
 /** Process LLM extraction results into the database */
 async function processLLMExtraction(
   extraction: LLMExtraction,
-  entryIds: number[],
+  entries: { id: number; ts: string }[],
   result: { factsExtracted: number; decisionsExtracted: number; disputesCreated: number },
   dirtyTopics: Set<string>,
   workspaceId: number,
 ) {
-  const sourceRefs = entryIds.map(id => `ledger:${id}`).join(', ');
+  const sourceRefs = entries.map(e => `ledger:${e.id}`).join(', ');
+
+  /**
+   * Knowledge is dated from its evidence, not from the moment we happened to
+   * extract it. The LLM does not attribute each fact to a single entry, so the
+   * batch is dated by its most recent entry: the fact holds as of the latest
+   * evidence that produced it.
+   *
+   * Using the wall clock here would flatten any imported history into one
+   * instant, which is exactly what breaks the supersede chain — it decides
+   * which fact replaced which by reading this ordering back.
+   *
+   * `reviewAt` deliberately stays on the wall clock below. It is an
+   * operational due-date, not a claim about the past; deriving it from the
+   * evidence would dump an entire archive into the review queue on import.
+   */
+  const evidenceTs = entries.reduce(
+    (latest, e) => (e.ts && e.ts > latest ? e.ts : latest),
+    entries[0]?.ts ?? now(),
+  );
 
   // Process facts
   for (const fact of extraction.facts) {
@@ -339,7 +359,7 @@ async function processLLMExtraction(
           statement: fact.statement,
           confidence: fact.confidence || 'medium',
           source: sourceRefs,
-          validFrom: now(),
+          validFrom: evidenceTs,
           reviewAt: daysFromNow(fact.review_days || 60),
           workspaceId,
         },
@@ -356,7 +376,7 @@ async function processLLMExtraction(
         topic: dec.topic,
         decision: dec.decision,
         rationale: dec.rationale || 'Not recorded in digest',
-        decidedAt: now(),
+        decidedAt: evidenceTs,
         status: 'active',
         reviewAt: daysFromNow(dec.review_days || 60),
         workspaceId,
@@ -470,8 +490,8 @@ Rules:
         );
         if (!extraction) throw new Error('LLM extraction failed validation');
 
-        const entryIds = unprocessed.map(e => e.id);
-        await processLLMExtraction(extraction, entryIds, result, dirtyTopics, workspaceId);
+        const sourceEntries = unprocessed.map(e => ({ id: e.id, ts: e.ts }));
+        await processLLMExtraction(extraction, sourceEntries, result, dirtyTopics, workspaceId);
         llmUsed = true;
       } catch (llmError) {
         // LLM failed — fall back to heuristic extraction
@@ -519,6 +539,12 @@ Rules:
       });
     }
 
+    // 4b. Bring fact vectors up to date, if the semantic path is configured.
+    // Runs after staleness flagging so freshly stale facts are skipped, and
+    // never throws — a provider outage leaves the vectors for the next run
+    // while queries carry on with keyword seeding.
+    const embeddingSync = await syncFactEmbeddings(workspaceId);
+
     // 5. Rebuild dirty briefs
     const disputeTopics = await db.dispute.findMany({ where: { status: 'open', workspaceId }, select: { topic: true }, distinct: ['topic'] });
     for (const t of disputeTopics) dirtyTopics.add(t.topic);
@@ -529,7 +555,10 @@ Rules:
     }
 
     const method = llmUsed ? `LLM (${describeLLM()})` : 'heuristic';
-    const summary = `Processed ${unprocessed.length} entries via ${method}. Extracted ${result.factsExtracted} facts, ${result.decisionsExtracted} decisions. ${result.disputesCreated} disputes. ${result.associationsCreated} auto-associations. Rebuilt ${result.briefsRebuilt} briefs. Flagged ${result.staleFlagged} stale.`;
+    const embeddingNote = embeddingSync.model
+      ? ` Embedded ${embeddingSync.embedded} facts${embeddingSync.pending > 0 ? `, ${embeddingSync.pending} pending` : ''}${embeddingSync.error ? ` (failed: ${embeddingSync.error})` : ''}.`
+      : '';
+    const summary = `Processed ${unprocessed.length} entries via ${method}. Extracted ${result.factsExtracted} facts, ${result.decisionsExtracted} decisions. ${result.disputesCreated} disputes. ${result.associationsCreated} auto-associations. Rebuilt ${result.briefsRebuilt} briefs. Flagged ${result.staleFlagged} stale.${embeddingNote}`;
 
     await db.librarianRun.update({
       where: { id: run.id },
