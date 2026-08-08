@@ -50,11 +50,26 @@ One thing is worth knowing before you clone it:
   [SECURITY.md](./SECURITY.md).
 
 **Running it needs one API key and nothing else.** Every model call goes through
-`src/lib/llm-client.ts`, which ships three adapters: the official Anthropic SDK, any
-OpenAI-compatible `/chat/completions` endpoint (OpenAI, Groq, OpenRouter, Together,
-vLLM, Ollama), and the `z-ai-web-dev-sdk` this was first built against. Export
-`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and the provider is auto-detected; set
-`LLM_PROVIDER` and `LLM_MODEL` to pin it explicitly.
+`src/lib/llm-client.ts`, which ships two adapters: the official Anthropic SDK, and any
+OpenAI-compatible `/chat/completions` endpoint. The second is deliberately the wide
+door — the same shape reaches OpenAI, OpenRouter, Groq, Together, vLLM and a local
+Ollama, so switching model or vendor is a base URL and a model name rather than code:
+
+```bash
+# Claude
+ANTHROPIC_API_KEY=sk-ant-...
+
+# GLM 5.2 (or anything else) via OpenRouter
+OPENAI_API_KEY=<openrouter key>
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=z-ai/glm-5.2
+
+# Local, free, no key
+OPENAI_BASE_URL=http://localhost:11434/v1
+LLM_MODEL=<your ollama model>
+```
+
+The provider is auto-detected from whichever key is present; `LLM_PROVIDER` pins it.
 
 ---
 
@@ -118,7 +133,7 @@ vLLM, Ollama), and the `z-ai-web-dev-sdk` this was first built against. Export
               ┌──────────▼──────────┐
               │    llm-client.ts    │
               │ Anthropic / OpenAI- │
-              │ compatible / z-ai   │
+              │ compatible endpoint │
               └─────────────────────┘
 ```
 
@@ -320,7 +335,7 @@ The Dreamer generates novel insights by **cross-pollinating** knowledge between 
 | **Markdown** | @mdxeditor/editor, react-markdown | 3.x / 10.x |
 | **Scheduling** | croner | 10.x |
 | **LLM client** | `src/lib/llm-client.ts` | provider-agnostic |
-| **LLM providers** | Anthropic SDK · OpenAI-compatible · z-ai (legacy) | — |
+| **LLM providers** | Anthropic SDK · any OpenAI-compatible endpoint | — |
 | **Reverse Proxy** | Caddy | — |
 | **Password Hashing** | bcryptjs | 3.x |
 
@@ -814,7 +829,7 @@ See [`.env.example`](./.env.example) for the complete documented list.
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | Yes | — | SQLite connection string (`file:./db/custom.db`) |
-| `LLM_PROVIDER` | No | *(auto-detect)* | `anthropic` / `openai` / `zai` |
+| `LLM_PROVIDER` | No | *(auto-detect)* | `anthropic` / `openai` |
 | `LLM_MODEL` | No | per provider | Overrides the provider's default model |
 | `ANTHROPIC_API_KEY` | * | — | Selects and authenticates the Anthropic adapter |
 | `OPENAI_API_KEY` | * | — | Selects and authenticates the OpenAI-compatible adapter |
@@ -891,7 +906,7 @@ const nonce = newNonce();
 const response = await complete({
   context: 'myfeature.extract',   // shows up in logs
   effort: 'low',                  // Claude reasoning depth; ignored elsewhere
-  temperature: 0.1,               // OpenAI-compatible + z-ai only
+  temperature: 0.1,               // OpenAI-compatible only (Claude rejects it)
   system: `${injectionGuard(nonce)}\n\n<your instructions and output schema>`,
   user: wrapUntrusted(userSuppliedText, nonce),
 });
@@ -930,7 +945,7 @@ outside that file needs to change.
 - [x] Multi-tenant RBAC (owner/admin/member)
 - [x] GDPR compliance (consent, export, erase, audit)
 - [x] Prompt-injection containment on every LLM call (nonce fencing + schema validation)
-- [x] Provider-agnostic LLM client (Anthropic · OpenAI-compatible · z-ai)
+- [x] Provider-agnostic LLM client (Anthropic SDK · any OpenAI-compatible endpoint)
 - [x] Role-gated MCP pipeline tools (`run_dreamer`, `run_librarian`)
 - [x] Benchmark harness (LongMemEval-style)
 - [x] Contest system

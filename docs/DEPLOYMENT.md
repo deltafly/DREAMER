@@ -57,13 +57,20 @@ kiderül abból, amelyik be van állítva.
 |---------|--------|-----------|
 | `ANTHROPIC_API_KEY` | Kiválasztja és hitelesíti az Anthropic adaptert | — |
 | `OPENAI_API_KEY` | Kiválasztja és hitelesíti az OpenAI-kompatibilis adaptert | — |
-| `OPENAI_BASE_URL` | Más OpenAI-kompatibilis szerver (Groq, OpenRouter, Ollama, vLLM). Önmagában is elég — lokális szerverhez nem kell kulcs. | `https://api.openai.com/v1` |
-| `LLM_PROVIDER` | Explicit provider: `anthropic` / `openai` / `zai`. Felülírja az auto-detektálást. | *(auto)* |
-| `LLM_MODEL` | Felülírja a provider alapmodelljét | `claude-opus-5` / `gpt-4o-mini` / `glm-4-flash` |
+| `OPENAI_BASE_URL` | Más OpenAI-kompatibilis szerver (OpenRouter, Groq, Ollama, vLLM). Önmagában is elég — lokális szerverhez nem kell kulcs. | `https://api.openai.com/v1` |
+| `LLM_PROVIDER` | Explicit provider: `anthropic` / `openai`. Felülírja az auto-detektálást. | *(auto)* |
+| `LLM_MODEL` | Felülírja a provider alapmodelljét | `claude-opus-5` / `gpt-4o-mini` |
 
-> A `zai` a sandbox-specifikus `z-ai-web-dev-sdk`-t használja, ami ezen a projekten
-> kívül nem működik. **Sosem választódik ki automatikusan** — csak explicit
-> `LLM_PROVIDER=zai` esetén.
+**Modell- és szolgáltatóváltás kódmódosítás nélkül.** Az OpenAI-kompatibilis adapter
+szándékosan a széles kapu: bármi, ami ugyanazt az alakot beszéli, elérhető rajta —
+a modell neve a `LLM_MODEL`-ben utazik.
+
+| Cél | `OPENAI_BASE_URL` | `LLM_MODEL` példa |
+|-----|-------------------|-------------------|
+| OpenAI | `https://api.openai.com/v1` (alapérték) | `gpt-4o-mini` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `z-ai/glm-5.2` |
+| Groq | `https://api.groq.com/openai/v1` | *(Groq modellnév)* |
+| Ollama (lokális, kulcs nélkül) | `http://localhost:11434/v1` | *(lokális modellnév)* |
 
 ### Production-ban kötelező
 

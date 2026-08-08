@@ -7,20 +7,27 @@ import { logger } from '@/lib/logger';
  * the Dreamer and the benchmark judge do not know which provider is serving
  * them — they hand over a system prompt, a user prompt, and a token budget.
  *
- * Three adapters ship in the box:
+ * Two adapters ship in the box:
  *
  *   anthropic — the official @anthropic-ai/sdk (Claude)
- *   openai    — any OpenAI-compatible /chat/completions endpoint, which covers
- *               OpenAI, Groq, OpenRouter, Together, vLLM and Ollama
- *   zai       — the z-ai-web-dev-sdk this project was originally built against,
- *               kept so existing deployments keep working
+ *   openai    — any OpenAI-compatible /chat/completions endpoint
  *
- * Selection is env-driven (see .env.example). With nothing configured the
- * client auto-detects from whichever API key is present, so a fresh clone runs
- * as soon as one key is exported.
+ * The second one is deliberately the wide door rather than an OpenAI-specific
+ * client: the same shape reaches OpenAI, OpenRouter, Groq, Together, vLLM and
+ * a local Ollama, so "add a provider" is usually a base URL and a model name
+ * rather than code. Some combinations worth knowing:
+ *
+ *   OpenRouter  OPENAI_BASE_URL=https://openrouter.ai/api/v1
+ *               LLM_MODEL=z-ai/glm-5.2   (or any other OpenRouter slug)
+ *   Ollama      OPENAI_BASE_URL=http://localhost:11434/v1
+ *               LLM_MODEL=<local model>  (no API key needed)
+ *
+ * Selection is env-driven (see .env.example). With nothing pinned the client
+ * auto-detects from whichever API key is present, so a fresh clone runs as soon
+ * as one key is exported.
  */
 
-export type LLMProvider = 'anthropic' | 'openai' | 'zai';
+export type LLMProvider = 'anthropic' | 'openai';
 
 /** Reasoning depth. Mapped per provider; ignored by providers without the concept. */
 export type LLMEffort = 'low' | 'medium' | 'high';
@@ -41,8 +48,8 @@ export interface LLMRequest {
    */
   effort?: LLMEffort;
   /**
-   * Sampling temperature. Applied by the OpenAI-compatible and z-ai adapters
-   * only — current Claude models reject sampling parameters with a 400, so the
+   * Sampling temperature. Applied by the OpenAI-compatible adapter only —
+   * current Claude models reject sampling parameters with a 400, so the
    * Anthropic adapter deliberately drops it rather than erroring.
    */
   temperature?: number;
@@ -69,8 +76,9 @@ const DEFAULT_MAX_TOKENS = 16_000;
 const DEFAULT_MODELS: Record<LLMProvider, string> = {
   // Current flagship. Override with LLM_MODEL.
   anthropic: 'claude-opus-5',
+  // Only meaningful against api.openai.com — every other OpenAI-compatible
+  // host needs its own LLM_MODEL anyway.
   openai: 'gpt-4o-mini',
-  zai: 'glm-4-flash',
 };
 
 /**
@@ -80,16 +88,11 @@ const DEFAULT_MODELS: Record<LLMProvider, string> = {
  * credential decides, so `export ANTHROPIC_API_KEY=...` is the entire setup
  * for a fresh clone. `OPENAI_BASE_URL` alone is enough too — local servers
  * (Ollama, vLLM) don't need a key.
- *
- * `zai` is never auto-selected: it is a sandbox-specific SDK that cannot work
- * outside the environment this project was first built in. Falling back to it
- * would turn "you forgot to set an API key" into an unrelated import error, so
- * it must be requested explicitly with LLM_PROVIDER=zai.
  */
 export function resolveProvider(): LLMProvider | null {
   const explicit = process.env.LLM_PROVIDER?.trim().toLowerCase();
   if (explicit) {
-    if (explicit === 'anthropic' || explicit === 'openai' || explicit === 'zai') return explicit;
+    if (explicit === 'anthropic' || explicit === 'openai') return explicit;
     logger.warn('Unknown LLM_PROVIDER — falling back to auto-detection', { value: explicit });
   }
 
@@ -195,32 +198,6 @@ async function completeOpenAI(req: LLMRequest, model: string): Promise<string> {
   return body.choices?.[0]?.message?.content ?? '';
 }
 
-// ===== z-ai (legacy) =====
-
-let _zai: Awaited<ReturnType<typeof import('z-ai-web-dev-sdk').default.create>> | null = null;
-
-async function getZAI() {
-  if (!_zai) {
-    // Lazy import — the SDK is an optional dependency, and pulling it in at
-    // module eval time also caused a TDZ crash under Turbopack.
-    const mod = await import('z-ai-web-dev-sdk');
-    _zai = await mod.default.create();
-  }
-  return _zai;
-}
-
-async function completeZAI(req: LLMRequest): Promise<string> {
-  const zai = await getZAI();
-  const response = await zai.chat.completions.create({
-    messages: [
-      { role: 'system', content: req.system },
-      { role: 'user', content: req.user },
-    ],
-    ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
-  });
-  return response.choices?.[0]?.message?.content ?? '';
-}
-
 // ===== Entry point =====
 
 /**
@@ -253,9 +230,6 @@ export async function complete(req: LLMRequest): Promise<LLMResponse> {
         break;
       case 'openai':
         text = await completeOpenAI(req, model);
-        break;
-      case 'zai':
-        text = await completeZAI(req);
         break;
     }
 

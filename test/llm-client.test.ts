@@ -84,15 +84,6 @@ withEnv({ OPENAI_BASE_URL: 'http://localhost:11434/v1' }, () => {
 withEnv({}, () => {
   check('no credentials resolves to null rather than a provider', resolveProvider() === null);
 });
-withEnv({}, () => {
-  check(
-    'the sandbox-only zai adapter is never auto-selected',
-    resolveProvider() !== 'zai',
-  );
-});
-withEnv({ LLM_PROVIDER: 'zai' }, () => {
-  check('zai is reachable only when asked for explicitly', resolveProvider() === 'zai');
-});
 
 // ===== 2. Explicit override =====
 console.log('\nexplicit LLM_PROVIDER');
@@ -103,8 +94,8 @@ withEnv({ LLM_PROVIDER: 'openai', ANTHROPIC_API_KEY: 'sk-ant-test' }, () => {
 withEnv({ LLM_PROVIDER: 'ANTHROPIC' }, () => {
   check('the provider name is case-insensitive', resolveProvider() === 'anthropic');
 });
-withEnv({ LLM_PROVIDER: '  zai  ' }, () => {
-  check('surrounding whitespace is tolerated', resolveProvider() === 'zai');
+withEnv({ LLM_PROVIDER: '  openai  ' }, () => {
+  check('surrounding whitespace is tolerated', resolveProvider() === 'openai');
 });
 withEnv({ LLM_PROVIDER: 'nonsense', OPENAI_API_KEY: 'sk-test' }, () => {
   check(
@@ -125,17 +116,32 @@ console.log('\nmodel selection');
 withEnv({}, () => {
   check('anthropic defaults to a current Claude model', resolveModel('anthropic').startsWith('claude-'));
   check('openai has its own default', resolveModel('openai') === 'gpt-4o-mini');
-  check('zai has its own default', resolveModel('zai') === 'glm-4-flash');
 });
 withEnv({ LLM_MODEL: 'my-local-model' }, () => {
   check(
     'LLM_MODEL overrides the default for every provider',
-    (['anthropic', 'openai', 'zai'] as const).every(p => resolveModel(p) === 'my-local-model'),
+    (['anthropic', 'openai'] as const).every(p => resolveModel(p) === 'my-local-model'),
   );
 });
 withEnv({ LLM_MODEL: '   ' }, () => {
   check('a blank LLM_MODEL falls back to the default', resolveModel('openai') === 'gpt-4o-mini');
 });
+
+// The documented recipe for reaching a non-OpenAI model through the
+// OpenAI-compatible adapter — the reason it is the wide door rather than an
+// OpenAI-specific client.
+withEnv(
+  {
+    OPENAI_API_KEY: 'sk-or-test',
+    OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+    LLM_MODEL: 'z-ai/glm-5.2',
+  },
+  () => {
+    check('a third-party model routes through the openai adapter', resolveProvider() === 'openai');
+    check('and keeps its own model slug', resolveModel('openai') === 'z-ai/glm-5.2');
+    check('describeLLM reports the routed model', describeLLM() === 'openai (z-ai/glm-5.2)');
+  },
+);
 
 // ===== 4. Reporting =====
 console.log('\nreporting and errors');
