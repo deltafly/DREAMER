@@ -1,5 +1,7 @@
 import { PrismaClient } from '@prisma/client';
-import { createHash, randomBytes } from 'crypto';
+// Relative rather than aliased: this file runs directly under `bun run`, not
+// through the Next.js build that resolves '@/'.
+import { KEY_DISCLOSURE_NOTICE, hashAgentKey, issueAgentKeys } from '../src/lib/agent-keys';
 
 const db = new PrismaClient();
 
@@ -54,34 +56,22 @@ async function main() {
   // fixed placeholder hashes ("sha256:abc123"), which looked like working
   // credentials while matching no key at all; a shared literal here would be
   // worse still, since every deployment would ship the same agent key.
-  const agentSpecs = [
-    { agentId: 'claude-web', role: 'owner' },
-    { agentId: 'claude-code', role: 'worker' },
-    { agentId: 'orchestrator', role: 'orchestrator' },
-    { agentId: 'glm-worker-1', role: 'worker' },
-    { agentId: 'librarian', role: 'librarian' },
-  ];
-
-  const issuedKeys = agentSpecs.map(spec => {
-    const rawKey = `ob_${randomBytes(24).toString('hex')}`;
-    return {
-      ...spec,
-      rawKey,
-      keyHash: `sha256:${createHash('sha256').update(rawKey).digest('hex')}`,
-      workspaceId: 1,
-    };
-  });
+  const issuedKeys = issueAgentKeys();
 
   await db.agent.createMany({
-    data: issuedKeys.map(({ agentId, keyHash, role, workspaceId }) => ({
-      agentId, keyHash, role, workspaceId,
+    data: issuedKeys.map(({ agentId, role, key }) => ({
+      agentId,
+      role,
+      keyHash: hashAgentKey(key),
+      workspaceId: 1,
     })),
   });
 
-  console.log('\n=== Agent API keys (shown once — store them now) ===');
-  for (const { agentId, role, rawKey } of issuedKeys) {
-    console.log(`  ${agentId.padEnd(16)} ${role.padEnd(13)} ${rawKey}`);
+  console.log('\n=== Agent API keys (shown once) ===');
+  for (const { agentId, role, key } of issuedKeys) {
+    console.log(`  ${agentId.padEnd(16)} ${role.padEnd(13)} ${key}`);
   }
+  console.log(KEY_DISCLOSURE_NOTICE);
   console.log('Use as: Authorization: Bearer <key> against POST /api/mcp\n');
 
   // === PREFERENCES ===

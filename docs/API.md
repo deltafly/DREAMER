@@ -486,6 +486,40 @@ Agent-ek listázása szerepkörrel és aktivitással.
 
 **Auth**: Dev: nem kötelező · Prod: kötelező
 
+**A `keyHash` mezőt szándékosan NEM adja vissza.** Tárolt hitelesítő adat, a
+kliensnek semmi dolga vele.
+
+---
+
+### `POST /api/agents/{id}/rotate`
+
+Agent API-kulcs cseréje. A régi kulcs a válasz pillanatában érvénytelen.
+
+**Auth**: kötelező · **csak `owner` vagy `admin`** (a tagságot az agent saját
+workspace-éhez méri, nem a hívó által megadotthoz)
+
+**Rate limit**: 5 kérés / perc.
+
+**Válasz**:
+
+```json
+{
+  "id": 3,
+  "agentId": "claude-web",
+  "role": "owner",
+  "key": "ob_<48 hex karakter>",
+  "notice": "Store these now — only their hashes are kept..."
+}
+```
+
+A `key` **egyszer** látszik: csak a hash tárolódik, visszakérni nem lehet. Az
+audit-naplóba a kulcs nem kerül bele, csak a rotáció ténye
+(`agent.key_rotated`).
+
+Ez a végpont eddig nem létezett, ezért egy kiszivárgott agent-kulcsot csak
+kézzel, az adatbázisban lehetett cserélni — ami a gyakorlatban azt jelenti,
+hogy nem cserélték.
+
 ---
 
 ## Sparks — Dreamer insight-ok
@@ -808,6 +842,21 @@ NextAuth végpontok (signIn, signOut, callback, session).
 
 **Request body**: `{ "email": "...", "name": "...", "password": "..." }`
 
+**Válasz (201)**: a felhasználó és a workspace mellett tartalmazza az
+`agentKeys` tömböt — a friss workspace saját, generált agent-kulcsait, nyers
+formában. **Egyszer.** Csak a hash-ük tárolódik, visszakérni nem lehet;
+elveszett vagy kiszivárgott kulcs cseréje: `POST /api/agents/{id}/rotate`.
+
+```json
+"agentKeys": [
+  { "agentId": "claude-web", "role": "owner", "key": "ob_<48 hex>" },
+  { "agentId": "claude-code", "role": "worker", "key": "ob_<48 hex>" }
+]
+```
+
+Korábban ezek a kulcsok a forráskódba írt fix hash-ek voltak, tehát minden
+telepítés minden workspace-e ugyanazt az owner-jogú hitelesítőt kapta.
+
 ---
 
 ## Workspaces — Munkaterületek
@@ -825,6 +874,9 @@ Workspacok listázása.
 Új workspace létrehozása.
 
 **Auth**: Dev: nem kötelező · Prod: kötelező
+
+**Válasz (201)**: a workspace mellett `agentKeys` — ugyanúgy egyszer látható
+nyers kulcsok, mint a regisztrációnál.
 
 ---
 

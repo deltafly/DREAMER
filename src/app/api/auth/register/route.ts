@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { db } from '@/lib/db';
 import { seedWorkspace } from '@/lib/seed-workspace';
+import { KEY_DISCLOSURE_NOTICE } from '@/lib/agent-keys';
 import { withHandler } from '@/lib/api-handler';
 import { ValidationError, ConflictError } from '@/lib/errors';
 import { checkRateLimit } from '@/lib/rate-limiter';
@@ -71,8 +72,8 @@ export const POST = withHandler(async (request: NextRequest) => {
     },
   });
 
-  // Seed the workspace with demo data
-  await seedWorkspace(workspace.id, db);
+  // Seed the workspace with demo data and its own agent keys
+  const { agentKeys } = await seedWorkspace(workspace.id, db);
 
   // Audit log
   await audit({
@@ -95,6 +96,10 @@ export const POST = withHandler(async (request: NextRequest) => {
         slug: workspace.slug,
         plan: workspace.plan,
       },
+      // The only time these exist in plaintext. Everything else in this
+      // response can be looked up again; these cannot.
+      agentKeys,
+      agentKeysNotice: KEY_DISCLOSURE_NOTICE,
     },
     { status: 201 }
   );

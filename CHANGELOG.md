@@ -38,6 +38,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Agent keys are no longer a constant in the source.** `seedWorkspace()` inserted
+  five literal `keyHash` values committed to this repository, and it runs on every
+  registration and every workspace creation — so every workspace of every deployment
+  shared the same set of credentials, one of them `role: owner`, with no way to
+  replace them. Keys are now generated per workspace, returned once in the
+  registration and workspace-creation responses, and stored only as hashes.
+  `test/agent-keys.test.ts` scans `src/` and `prisma/` so a literal key or key hash
+  fails CI.
+- **Added `POST /api/agents/{id}/rotate`.** There was no way to replace a leaked
+  agent key short of editing the database by hand. Owner/admin only, scoped to the
+  agent's own workspace, rate limited, audited — and the key never reaches the log.
+- **`GET /api/agents` no longer returns `keyHash`.** It is the stored form of a
+  credential and an offline target; listing agents is no reason to hand it to every
+  workspace member. Nothing in the UI ever read it.
+- Key hashing moved to `src/lib/agent-keys.ts`, so the form the MCP route verifies
+  and the form the seeder stores cannot drift apart.
 - **Removed `mini-services/`.** Two standalone servers shipped in the repo with no
   authentication of their own, bound to every interface, one of them pinning
   every request to workspace 1 and so bypassing the app's tenant checks. The

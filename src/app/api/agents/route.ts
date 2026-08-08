@@ -14,6 +14,10 @@ export const GET = withHandler(async (request: NextRequest) => {
   const [agents, total] = await Promise.all([
     db.agent.findMany({
       where,
+      // Selected explicitly so keyHash stays out of the response. It is only a
+      // hash, but it is the stored form of a credential and an offline target;
+      // listing agents is no reason to hand it to every workspace member.
+      select: { id: true, agentId: true, role: true, workspaceId: true },
       orderBy: { id: 'asc' },
       take: limit,
       skip: offset,

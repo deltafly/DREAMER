@@ -625,9 +625,13 @@ All 51 API routes use structured JSON responses via `withHandler()`:
 ### Agents
 | Method | Route | Auth | RBAC | Description |
 |--------|-------|------|------|-------------|
-| GET | `/api/agents` | Required | — | List workspace agents |
-| POST | `/api/agents` | Required | Owner/Admin | Create agent (returns API key) |
-| DELETE | `/api/agents/[id]` | Required | Owner/Admin | Revoke agent key |
+| GET | `/api/agents` | Required | — | List workspace agents (never returns `keyHash`) |
+| POST | `/api/agents/[id]/rotate` | Required | Owner/Admin | Replace an agent's key; returns the new one once |
+
+> Agents themselves are created by seeding a workspace, each with its own
+> randomly generated key returned once at creation. There is no create-agent or
+> delete-agent endpoint yet — rotation is what contains a leaked key, since
+> rotating to a key nobody holds disables the old one.
 
 ### Contest System
 | Method | Route | Auth | Description |

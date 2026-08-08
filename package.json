@@ -14,7 +14,7 @@
     "build": "prisma generate && prisma migrate deploy && next build && cp -R .next/static .next/standalone/.next/ && cp -R public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
-    "test": "bun ./test/llm-safety.test.ts && bun ./test/mcp-permissions.test.ts && bun ./test/llm-client.test.ts && bun ./test/time.test.ts && bun ./test/sql-tables.test.ts && bun ./test/schema-drift.test.ts && bun ./test/embeddings.test.ts",
+    "test": "bun ./test/llm-safety.test.ts && bun ./test/mcp-permissions.test.ts && bun ./test/llm-client.test.ts && bun ./test/time.test.ts && bun ./test/sql-tables.test.ts && bun ./test/schema-drift.test.ts && bun ./test/embeddings.test.ts && bun ./test/agent-keys.test.ts",
     "db:generate": "prisma generate",
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",

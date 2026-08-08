@@ -90,7 +90,9 @@ export interface SearchResult {
 export interface Preference { id: number; scope: string; statement: string; active: boolean; }
 
 export interface AgentInfo {
-  id: string; keyHash: string; role: string;
+  // No keyHash: the API deliberately does not serve it. Nothing in the UI ever
+  // read it, and a stored credential has no business reaching the client.
+  id: string; agentId: string; role: string;
   ledgerEntries: number; lastActivity: string | null;
 }
 

@@ -1,8 +1,8 @@
 import { db } from '@/lib/db';
 import { getWorkspaceId, requireAuth, verifyWorkspaceAccess } from '@/lib/auth-helpers';
 import { NextRequest, NextResponse } from 'next/server';
-import { createHash } from 'crypto';
 import { z } from 'zod';
+import { hashAgentKey } from '@/lib/agent-keys';
 import { logger } from '@/lib/logger';
 import { checkToolAccess } from '@/lib/mcp-permissions';
 import { executeBrainQuery } from '@/lib/brain-query';
@@ -790,8 +790,9 @@ async function authenticateAgentKey(request: NextRequest): Promise<{
     return null;
   }
 
-  // Hash with SHA-256, same format as stored in DB
-  const hash = `sha256:${createHash('sha256').update(rawKey).digest('hex')}`;
+  // Same helper that issues and rotates keys, so the stored form and the
+  // verified form can never drift apart.
+  const hash = hashAgentKey(rawKey);
 
   const agent = await db.agent.findFirst({
     where: { keyHash: hash },

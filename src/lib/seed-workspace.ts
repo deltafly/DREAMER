@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { hashAgentKey, issueAgentKeys, type IssuedAgentKey } from '@/lib/agent-keys';
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const daysAgo = (d: number) => {
@@ -20,19 +21,33 @@ const structuredDigest = (data: {
   free?: string;
 }) => JSON.stringify(data);
 
-export async function seedWorkspace(workspaceId: number, db: PrismaClient) {
+/**
+ * Populate a new workspace with its starting agents and a set of demo content.
+ *
+ * Returns the agent keys it generated. They are plaintext and this is the only
+ * time they exist in that form — the caller is expected to hand them to whoever
+ * created the workspace and then let them go.
+ */
+export async function seedWorkspace(
+  workspaceId: number,
+  db: PrismaClient,
+): Promise<{ agentKeys: IssuedAgentKey[] }> {
   const ws = { workspaceId };
 
   // === AGENTS ===
-  // Dev API keys (not for production): ob_dev_{agentId}_test_key
+  // Generated per workspace. These used to be five hashes written into this
+  // file, which meant every workspace of every deployment shared the same
+  // owner-role credential, published in the repository, with no way to replace
+  // it. Only the hash is stored; the plaintext leaves through the return value
+  // and is never written down again.
+  const agentKeys = issueAgentKeys();
   await db.agent.createMany({
-    data: [
-      { agentId: 'claude-web', keyHash: 'sha256:9ab3f1d5e35869c2a0c98a5536c406e0431a1906de0758b85caa5a200a968c9f', role: 'owner', ...ws },
-      { agentId: 'claude-code', keyHash: 'sha256:87e1413ce0e1980d831c3927d92d1c460d8330550bce0410904ee11730a8d683', role: 'worker', ...ws },
-      { agentId: 'orchestrator', keyHash: 'sha256:766f7a27dffdab2d6bf0bde0ab6017fc2b9cfb36f7cb6bf67ec7d385dfcccb68', role: 'orchestrator', ...ws },
-      { agentId: 'glm-worker-1', keyHash: 'sha256:e386493fbc09d6aae789af6f3f2ee4fd87a5aae0afb60c0a9692ce982c0a500b', role: 'worker', ...ws },
-      { agentId: 'librarian', keyHash: 'sha256:e02f2ceb9dc61f76fcc00aee651587f058e8d99e6d38d51df3aaaa7bd9b922b7', role: 'librarian', ...ws },
-    ],
+    data: agentKeys.map(({ agentId, role, key }) => ({
+      agentId,
+      role,
+      keyHash: hashAgentKey(key),
+      ...ws,
+    })),
   });
 
   // === PREFERENCES ===
@@ -468,4 +483,6 @@ export async function seedWorkspace(workspaceId: number, db: PrismaClient) {
       { createdAt: daysAgo(5), kind: 'trend', severity: 'info', title: 'Decision density: mcos-engine leads', description: '4 out of 6 decisions are for mcos-engine. onebrainer has 3 decisions, personal has 0.', topics: JSON.stringify(['mcos-engine', 'onebrainer', 'personal']), actionable: false, ...ws },
     ],
   });
+
+  return { agentKeys };
 }
