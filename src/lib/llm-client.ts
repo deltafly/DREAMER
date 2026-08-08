@@ -58,7 +58,7 @@ export interface LLMResponse {
 
 /** Raised when the provider is unreachable, unconfigured, or returns nothing usable. */
 export class LLMUnavailableError extends Error {
-  constructor(message: string, readonly provider: LLMProvider) {
+  constructor(message: string, readonly provider: LLMProvider | 'none') {
     super(message);
     this.name = 'LLMUnavailableError';
   }
@@ -74,13 +74,19 @@ const DEFAULT_MODELS: Record<LLMProvider, string> = {
 };
 
 /**
- * Resolve the active provider.
+ * Resolve the active provider, or null when nothing is configured.
  *
  * An explicit LLM_PROVIDER always wins. Otherwise the first configured
  * credential decides, so `export ANTHROPIC_API_KEY=...` is the entire setup
- * for a fresh clone.
+ * for a fresh clone. `OPENAI_BASE_URL` alone is enough too — local servers
+ * (Ollama, vLLM) don't need a key.
+ *
+ * `zai` is never auto-selected: it is a sandbox-specific SDK that cannot work
+ * outside the environment this project was first built in. Falling back to it
+ * would turn "you forgot to set an API key" into an unrelated import error, so
+ * it must be requested explicitly with LLM_PROVIDER=zai.
  */
-export function resolveProvider(): LLMProvider {
+export function resolveProvider(): LLMProvider | null {
   const explicit = process.env.LLM_PROVIDER?.trim().toLowerCase();
   if (explicit) {
     if (explicit === 'anthropic' || explicit === 'openai' || explicit === 'zai') return explicit;
@@ -88,8 +94,8 @@ export function resolveProvider(): LLMProvider {
   }
 
   if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
-  if (process.env.OPENAI_API_KEY) return 'openai';
-  return 'zai';
+  if (process.env.OPENAI_API_KEY || process.env.OPENAI_BASE_URL) return 'openai';
+  return null;
 }
 
 export function resolveModel(provider: LLMProvider): string {
@@ -227,6 +233,15 @@ async function completeZAI(req: LLMRequest): Promise<string> {
  */
 export async function complete(req: LLMRequest): Promise<LLMResponse> {
   const provider = resolveProvider();
+  if (!provider) {
+    throw new LLMUnavailableError(
+      'No LLM provider is configured. Set ANTHROPIC_API_KEY, or OPENAI_API_KEY ' +
+        '(or OPENAI_BASE_URL alone for a local server such as Ollama), or pin one ' +
+        'explicitly with LLM_PROVIDER. See .env.example.',
+      'none',
+    );
+  }
+
   const model = resolveModel(provider);
   const started = Date.now();
 
@@ -265,5 +280,6 @@ export async function complete(req: LLMRequest): Promise<LLMResponse> {
 /** Provider and model in effect, for health checks and run summaries. */
 export function describeLLM(): string {
   const provider = resolveProvider();
+  if (!provider) return 'not configured';
   return `${provider} (${resolveModel(provider)})`;
 }

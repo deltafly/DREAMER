@@ -280,12 +280,22 @@ A `src/lib/` könyvtár tartalmazza az összes üzleti logikát, amit az API rou
 | `librarian.ts` | `runLibrarian(workspaceId)` | L1→L2→L3 desztillációs pipeline: regex heurisztika + LLM kinyerés, auto-asszociáció, brief rebuild. |
 | `scheduler.ts` | `getScheduler()` | Singleton cron scheduler (croner). Lazy inicializáció, overlap védelem, dev-mode guard (Turbopack kompatibilitás). |
 
+### LLM réteg
+
+Minden modellhívás ezen a két modulon megy át — provider SDK-t közvetlenül hívni tilos.
+
+| Fájl | Export | Leírás |
+|------|--------|--------|
+| `llm-client.ts` | `complete()`, `resolveProvider()`, `resolveModel()`, `describeLLM()` | Provider-agnosztikus belépési pont. Három adapter: `anthropic` (hivatalos SDK), `openai` (bármely OpenAI-kompatibilis `/chat/completions` — OpenAI, Groq, OpenRouter, vLLM, Ollama), `zai` (legacy, csak explicit `LLM_PROVIDER=zai` esetén). Az adapter nyeli le a provider-eltéréseket: a `temperature` NEM megy a Claude-nak (400-zal utasítaná el), az `effort` hintet a nem ismerő providerek eldobják, a Claude `refusal` stop reason-je `LLMUnavailableError`-rá alakul. Konfigurálatlan állapotban beszédes hibát dob. |
+| `llm-safety.ts` | `wrapUntrusted()`, `injectionGuard()`, `newNonce()`, `parseLLMJson()` + Zod sémák | Prompt-injection behatárolás. Hívásonkénti véletlen nonce keríti a megbízhatatlan szöveget; minden választ Zod-séma validál a DB-írás ELŐTT (zárt enumok, hossz- és tömbkorlátok). Nem illeszkedő válasz = teljes eldobás. |
+
 ### Infrastruktúra modulok
 
 | Fájl | Export | Leírás |
 |------|--------|--------|
 | `auth.ts` | `authOptions` | NextAuth v4 konfiguráció: Credentials provider, JWT strategy, bcrypt jelszó ellenőrzés. |
-| `auth-helpers.ts` | `requireAuth()`, `getWorkspaceId()`, `getOptionalWorkspaceId()`, `verifyWorkspaceAccess()` | Auth + workspace feloldás. Dev: workspace 1 fallback. Prod: kötelező auth + RBAC. |
+| `auth-helpers.ts` | `requireAuth()`, `getWorkspaceId()`, `verifyWorkspaceAccess()` | Auth + workspace feloldás. Dev: workspace 1 fallback. Prod: kötelező auth + RBAC. |
+| `mcp-permissions.ts` | `checkToolAccess()`, `isPrivilegedTool()`, `allowedRolesFor()` | Role-gate az MCP toolokra. A pipeline-indító `run_dreamer` / `run_librarian` csak megfelelő szerepkörrel hívható. Tiszta függvények, DB nélkül tesztelhetők. |
 | `api-handler.ts` | `withHandler()` | API route wrapper: requestId, struktúrált error response, lassú kérés figyelmeztetés (>1s). |
 | `errors.ts` | `AppError`, `ValidationError`, `AuthError`, `ForbiddenError`, `NotFoundError`, `ConflictError`, `RateLimitError` | Tipizált hiba osztályok. |
 | `db.ts` | `db` | PrismaClient singleton, dev-ben query logging. |

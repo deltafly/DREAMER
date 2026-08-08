@@ -8,7 +8,8 @@
  * - Efficient: single librarian run for all evidence, then per-question query+judge
  * - Observable: per-question breakdown by type (single_session / multi_session / temporal)
  * - Honest: LLM judge scores 0.0-1.0, not just binary correct/incorrect
- * - Cheap: gpt-4o-mini for both extraction and judge, ~$0.50 for 50 questions
+ * - Cheap: cost scales with the configured provider and model (see llm-client.ts);
+ *   on a small model such as gpt-4o-mini this is roughly $0.50 for 50 questions
  */
 
 import { db } from '@/lib/db';

@@ -454,26 +454,49 @@ Kapcsolat panel a dashboardon (nem dedikált API route).
 
 MCP JSON-RPC szerver (Streamable HTTP, MCP 2025-03-26 spec). Kompatibilis Claude Desktop-pal és OpenAI-val MCP adapter-en keresztül.
 
-**Auth**: Nem kötelező (workspace opcionális)
+**Auth**: `Authorization: Bearer <agent-kulcs>` (SHA-256 hash alapján feloldva), vagy session.
+Dev-ben opcionális.
 **CORS**: Konfigurálható `MCP_ALLOWED_ORIGINS` env var-al
 
 ### MCP Tool-ok (13 db)
 
-| Tool neve | Leírás |
-|-----------|--------|
-| `brain_query` | Természetes nyelvű neurális keresés a tudásbázisban |
-| `add_fact` | Új tény hozzáadása (topic, entity, attribute, statement) |
-| `list_topics` | Témák listázása |
-| `get_brief` | Delta-brief lekérdezése témánként |
-| `get_neural_stats` | Neurális statisztikák lekérdezése |
-| `get_knowledge_gaps` | Tudáshiányok lekérdezése |
-| `get_insights` | Brain insight-ok lekérdezése |
-| `get_associations` | Asszociációk listázása (opcionális topic szűrő) |
-| `get_graph` | Tudásgráf adatai |
-| `run_dreamer` | Dreamer pipeline futtatás |
-| `run_librarian` | Librarian pipeline futtatás |
-| `list_decisions` | Döntések listázása (opcionális topic szűrő) |
-| `list_sparks` | Spark-ok listázása (opcionális topic/kind szűrő) |
+| Tool neve | Leírás | Szükséges szerepkör |
+|-----------|--------|---------------------|
+| `brain_query` | Természetes nyelvű neurális keresés a tudásbázisban | bármely |
+| `add_fact` | Új tény hozzáadása (topic, entity, attribute, statement) | bármely |
+| `list_topics` | Témák listázása | bármely |
+| `get_brief` | Delta-brief lekérdezése témánként | bármely |
+| `get_neural_stats` | Neurális statisztikák lekérdezése | bármely |
+| `get_knowledge_gaps` | Tudáshiányok lekérdezése | bármely |
+| `get_insights` | Brain insight-ok lekérdezése | bármely |
+| `get_associations` | Asszociációk listázása (opcionális topic szűrő) | bármely |
+| `get_graph` | Tudásgráf adatai | bármely |
+| `run_dreamer` | Dreamer pipeline futtatás | `owner`, `admin`, `orchestrator` |
+| `run_librarian` | Librarian pipeline futtatás | `owner`, `admin`, `orchestrator`, `librarian` |
+| `list_decisions` | Döntések listázása (opcionális topic szűrő) | bármely |
+| `list_sparks` | Spark-ok listázása (opcionális topic/kind szűrő) | bármely |
+
+### Szerepkör-ellenőrzés
+
+A `run_dreamer` és `run_librarian` LLM-pipeline-t indít: tokent költ, adatbázist ír és
+task-lockot fog. Ezért szerepkörhöz kötöttek — egy csak olvasásra szánt `worker` kulcs
+nem éri el őket. A szerepkör agent-kulcsnál az `Agent.role`, session-hívónál a
+workspace-tagság (`WorkspaceMember.role`).
+
+Elutasításkor JSON-RPC hiba érkezik, `-32604` kóddal:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32604,
+    "message": "Role \"worker\" may not call \"run_dreamer\". Allowed roles: owner, admin, orchestrator"
+  }
+}
+```
+
+A döntés a `src/lib/mcp-permissions.ts`-ben él, tiszta függvényekként.
 
 ### `GET /api/mcp`
 

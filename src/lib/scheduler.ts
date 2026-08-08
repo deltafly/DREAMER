@@ -3,7 +3,8 @@ import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { acquireTaskLock, releaseTaskLock } from '@/lib/task-lock';
 
-// Lazy loaders — avoid pulling in z-ai-web-dev-sdk at module eval time
+// Lazy loaders — keep the LLM client, and whichever provider SDK it imports,
+// out of module evaluation. This is what avoids the Turbopack TDZ crash.
 type TaskFn = (workspaceId: number) => Promise<unknown>;
 let _dreamerFn: TaskFn | null = null;
 let _librarianFn: TaskFn | null = null;

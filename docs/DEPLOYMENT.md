@@ -47,6 +47,24 @@ A projekt `.env.example` fájl tartalmazza a dokumentált sablont.
 |---------|--------|-------|
 | `DATABASE_URL` | SQLite adatbázis elérési út | `file:/app/data/onebrainer.db` |
 
+### LLM provider (a Librarian / Dreamer / benchmark ehhez kell)
+
+Legalább **egy** kulcs kell, különben a modellhívások beszédes hibával leállnak
+(a REST API és a Brain keresés kulcs nélkül is működik). A provider automatikusan
+kiderül abból, amelyik be van állítva.
+
+| Változó | Leírás | Alapérték |
+|---------|--------|-----------|
+| `ANTHROPIC_API_KEY` | Kiválasztja és hitelesíti az Anthropic adaptert | — |
+| `OPENAI_API_KEY` | Kiválasztja és hitelesíti az OpenAI-kompatibilis adaptert | — |
+| `OPENAI_BASE_URL` | Más OpenAI-kompatibilis szerver (Groq, OpenRouter, Ollama, vLLM). Önmagában is elég — lokális szerverhez nem kell kulcs. | `https://api.openai.com/v1` |
+| `LLM_PROVIDER` | Explicit provider: `anthropic` / `openai` / `zai`. Felülírja az auto-detektálást. | *(auto)* |
+| `LLM_MODEL` | Felülírja a provider alapmodelljét | `claude-opus-5` / `gpt-4o-mini` / `glm-4-flash` |
+
+> A `zai` a sandbox-specifikus `z-ai-web-dev-sdk`-t használja, ami ezen a projekten
+> kívül nem működik. **Sosem választódik ki automatikusan** — csak explicit
+> `LLM_PROVIDER=zai` esetén.
+
 ### Production-ban kötelező
 
 | Változó | Leírás | Generálás |
@@ -69,6 +87,12 @@ A projekt `.env.example` fájl tartalmazza a dokumentált sablont.
 ```env
 # ===== Kötelező =====
 DATABASE_URL=file:/app/data/onebrainer.db
+
+# ===== LLM provider (egy kulcs elég) =====
+ANTHROPIC_API_KEY=sk-ant-...
+# vagy: OPENAI_API_KEY=sk-...
+# vagy lokális szerver, kulcs nélkül: OPENAI_BASE_URL=http://localhost:11434/v1
+# LLM_MODEL=claude-opus-5
 
 # ===== Auth (production kötelező) =====
 NEXTAUTH_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
@@ -235,7 +259,7 @@ A seed script (`prisma/seed.ts`) létrehozza a demo workspace alapadatokat:
 | User | 1 | `demo@onebrainer.ai` (Demo User) |
 | Workspace | 1 | "Demo Brain" (plan: pro) |
 | WorkspaceSettings | 1 | Scheduler alapbeállítások |
-| Agents | 5 | claude-web, claude-code, orchestrator, glm-worker-1, librarian |
+| Agents | 5 | claude-web (owner), claude-code (worker), orchestrator, glm-worker-1 (worker), librarian — **kulcsonként friss véletlen API-kulcs, egyszer kiírva** |
 | Preferences | 7 | Kódolási stílus, PR review, commit convention, stb. |
 | Ledger | 12 | Strukturált JSON digest bejegyzések |
 | Facts | 18 | Tények 6 témában (backend, frontend, infra, auth, testing, CI/CD) |
@@ -259,6 +283,20 @@ A seed script (`prisma/seed.ts`) létrehozza a demo workspace alapadatokat:
 ```bash
 bun run db:seed
 ```
+
+A seed minden agenthez **friss véletlen API-kulcsot** generál, és csak a SHA-256
+hash-t tárolja — a plaintext egyszer jelenik meg a kimeneten, pontosan úgy, ahogy a
+`POST /api/agents` viselkedik. Mentsd el őket futtatáskor; utólag nem visszanyerhetők,
+csak új kulcsot lehet kiadni:
+
+```
+=== Agent API keys (shown once — store them now) ===
+  claude-web       owner         ob_3f9a…
+  claude-code      worker        ob_71c4…
+  ...
+```
+
+Használat: `Authorization: Bearer <kulcs>` a `POST /api/mcp` ellen.
 
 ### Seed újrafuttatása
 

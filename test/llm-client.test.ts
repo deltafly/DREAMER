@@ -10,7 +10,7 @@
  * always wins over auto-detection.
  */
 
-import { resolveProvider, resolveModel, describeLLM, LLMUnavailableError } from '../src/lib/llm-client';
+import { resolveProvider, resolveModel, describeLLM, complete, LLMUnavailableError } from '../src/lib/llm-client';
 
 let passed = 0;
 const failures: string[] = [];
@@ -25,7 +25,9 @@ function check(name: string, ok: boolean): void {
   }
 }
 
-const LLM_VARS = ['LLM_PROVIDER', 'LLM_MODEL', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] as const;
+const LLM_VARS = [
+  'LLM_PROVIDER', 'LLM_MODEL', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL',
+] as const;
 const saved: Record<string, string | undefined> = {};
 for (const key of LLM_VARS) saved[key] = process.env[key];
 
@@ -36,10 +38,28 @@ function withEnv(env: Partial<Record<(typeof LLM_VARS)[number], string>>, fn: ()
   try {
     fn();
   } finally {
-    for (const key of LLM_VARS) {
-      if (saved[key] === undefined) delete process.env[key];
-      else process.env[key] = saved[key];
-    }
+    restoreEnv();
+  }
+}
+
+/** Async variant of {@link withEnv}, for checks that await a call. */
+async function withEnvAsync(
+  env: Partial<Record<(typeof LLM_VARS)[number], string>>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  for (const key of LLM_VARS) delete process.env[key];
+  for (const [key, value] of Object.entries(env)) process.env[key] = value;
+  try {
+    await fn();
+  } finally {
+    restoreEnv();
+  }
+}
+
+function restoreEnv(): void {
+  for (const key of LLM_VARS) {
+    if (saved[key] === undefined) delete process.env[key];
+    else process.env[key] = saved[key];
   }
 }
 
@@ -55,8 +75,23 @@ withEnv({ OPENAI_API_KEY: 'sk-test' }, () => {
 withEnv({ ANTHROPIC_API_KEY: 'sk-ant-test', OPENAI_API_KEY: 'sk-test' }, () => {
   check('Anthropic wins when both keys are present', resolveProvider() === 'anthropic');
 });
+withEnv({ OPENAI_BASE_URL: 'http://localhost:11434/v1' }, () => {
+  check(
+    'a base URL alone selects openai (local servers need no key)',
+    resolveProvider() === 'openai',
+  );
+});
 withEnv({}, () => {
-  check('no credentials falls back to the legacy zai adapter', resolveProvider() === 'zai');
+  check('no credentials resolves to null rather than a provider', resolveProvider() === null);
+});
+withEnv({}, () => {
+  check(
+    'the sandbox-only zai adapter is never auto-selected',
+    resolveProvider() !== 'zai',
+  );
+});
+withEnv({ LLM_PROVIDER: 'zai' }, () => {
+  check('zai is reachable only when asked for explicitly', resolveProvider() === 'zai');
 });
 
 // ===== 2. Explicit override =====
@@ -75,6 +110,12 @@ withEnv({ LLM_PROVIDER: 'nonsense', OPENAI_API_KEY: 'sk-test' }, () => {
   check(
     'an unknown provider name falls back to auto-detection rather than crashing',
     resolveProvider() === 'openai',
+  );
+});
+withEnv({ LLM_PROVIDER: 'nonsense' }, () => {
+  check(
+    'an unknown provider name with no credentials resolves to null',
+    resolveProvider() === null,
   );
 });
 
@@ -103,6 +144,24 @@ withEnv({ ANTHROPIC_API_KEY: 'sk-ant-test', LLM_MODEL: 'claude-opus-5' }, () => 
   const described = describeLLM();
   check('describeLLM names the provider', described.includes('anthropic'));
   check('describeLLM names the model', described.includes('claude-opus-5'));
+});
+withEnv({}, () => {
+  check('describeLLM reports an unconfigured client plainly', describeLLM() === 'not configured');
+});
+
+// An unconfigured client must say what is missing rather than failing somewhere
+// deeper with an unrelated import or network error.
+await withEnvAsync({}, async () => {
+  let message = '';
+  try {
+    await complete({ context: 'test', system: 's', user: 'u' });
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  check('complete() refuses when nothing is configured', message.length > 0);
+  check('the message names ANTHROPIC_API_KEY', message.includes('ANTHROPIC_API_KEY'));
+  check('the message names OPENAI_API_KEY', message.includes('OPENAI_API_KEY'));
+  check('the message points at .env.example', message.includes('.env.example'));
 });
 
 const err = new LLMUnavailableError('boom', 'openai');

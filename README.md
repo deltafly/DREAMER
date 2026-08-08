@@ -706,7 +706,9 @@ Evidence Sessions → Ledger (backdated) → Librarian (extract) → Brain Query
 
 **Judge**: the configured LLM scores each result 0.0–1.0 based on whether the returned facts contain the expected answer, with partial credit.
 
-**Cost**: ~$0.50 for 50 questions (gpt-4o-mini for both extraction and judge).
+**Cost**: depends on the configured provider and model. On a small model such as
+`gpt-4o-mini` (extraction and judge alike) a 50-question run is roughly $0.50; a
+local model via `OPENAI_BASE_URL` costs nothing but electricity.
 
 **Cooldown**: 5 minutes per workspace between benchmark runs.
 
