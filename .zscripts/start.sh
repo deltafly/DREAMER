@@ -98,27 +98,9 @@ else
     echo "⚠️  未找到 Next.js 服务器文件: ./next-service-dist/server.js"
 fi
 
-# 启动 mini-services
-if [ -f "./mini-services-start.sh" ]; then
-    echo "🚀 启动 mini-services..."
-    
-    # 运行启动脚本（从根目录运行，脚本内部会处理 mini-services-dist 目录）
-    sh ./mini-services-start.sh &
-    MINI_PID=$!
-    pids="$pids $MINI_PID"
-    
-    # 等待一小段时间检查进程是否成功启动
-    sleep 1
-    if ! kill -0 "$MINI_PID" 2>/dev/null; then
-        echo "⚠️  mini-services 可能启动失败，但继续运行..."
-    else
-        echo "✅ mini-services 已启动 (PID: $MINI_PID)"
-    fi
-elif [ -d "./mini-services-dist" ]; then
-    echo "⚠️  未找到 mini-services 启动脚本，但目录存在"
-else
-    echo "ℹ️  mini-services 目录不存在，跳过"
-fi
+# NOTE: this used to launch `mini-services` alongside the app — unauthenticated
+# servers bound to every interface. Removed; /api/mcp serves that role behind
+# the agent-key check. Do not reintroduce a listener here without auth.
 
 # 启动 Caddy（如果存在 Caddyfile）
 echo "🚀 启动 Caddy..."
