@@ -11,10 +11,10 @@
   },
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
-    "build": "prisma generate && prisma migrate deploy && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
+    "build": "prisma generate && prisma migrate deploy && next build && cp -R .next/static .next/standalone/.next/ && cp -R public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
-    "test": "bun ./test/llm-safety.test.ts",
+    "test": "bun ./test/llm-safety.test.ts && bun ./test/mcp-permissions.test.ts && bun ./test/llm-client.test.ts",
     "db:generate": "prisma generate",
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
@@ -25,6 +25,7 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -91,9 +92,11 @@
     "tailwindcss-animate": "^1.0.7",
     "uuid": "^11.1.0",
     "vaul": "^1.1.2",
-    "z-ai-web-dev-sdk": "^0.0.18",
     "zod": "^4.0.2",
     "zustand": "^5.0.6"
+  },
+  "optionalDependencies": {
+    "z-ai-web-dev-sdk": "^0.0.18"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

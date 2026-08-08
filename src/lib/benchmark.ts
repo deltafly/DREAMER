@@ -14,6 +14,7 @@
 import { db } from '@/lib/db';
 import { executeBrainQuery, type BrainQueryResult } from '@/lib/brain-query';
 import { runLibrarian } from '@/lib/librarian';
+import { complete } from '@/lib/llm-client';
 import { JudgeVerdictSchema, injectionGuard, newNonce, parseLLMJson, wrapUntrusted } from '@/lib/llm-safety';
 
 // ===== Types =====
@@ -80,16 +81,6 @@ export interface BenchmarkReport {
   };
 }
 
-// ===== Lazy ZAI loader =====
-let _zai: Awaited<ReturnType<typeof import('z-ai-web-dev-sdk').default.create>> | null = null;
-async function getZAI() {
-  if (!_zai) {
-    const mod = await import('z-ai-web-dev-sdk');
-    _zai = await mod.default.create();
-  }
-  return _zai;
-}
-
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
 // ===== Judge =====
@@ -117,8 +108,6 @@ async function judgeResult(
   expectedAnswer: string,
   facts: BrainQueryResult['results'],
 ): Promise<JudgeVerdict> {
-  const zai = await getZAI();
-
   // Questions, expected answers and retrieved facts are all caller-supplied,
   // so a benchmark run is itself an injection channel into the judge — a
   // crafted question could otherwise talk the judge into scoring 1.0.
@@ -127,24 +116,22 @@ async function judgeResult(
     ? '(No facts returned)'
     : facts.map((r, i) => `${i + 1}. [${r.fact.topic}] ${r.fact.entity}/${r.fact.attribute}: ${r.fact.statement} (activation: ${r.activation})`).join('\n');
 
-  const response = await zai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: `${injectionGuard(nonce)}\n\n${JUDGE_SYSTEM_PROMPT}` },
-      {
-        role: 'user',
-        content:
-          `QUESTION:\n${wrapUntrusted(question, nonce)}\n\n` +
-          `EXPECTED ANSWER:\n${wrapUntrusted(expectedAnswer, nonce)}\n\n` +
-          `RETRIEVED FACTS:\n${wrapUntrusted(factsText, nonce)}`,
-      },
-    ],
+  const response = await complete({
+    context: 'benchmark.judge',
+    effort: 'low',
     temperature: 0.0,
-    max_tokens: 300,
+    // The judge emits one short JSON verdict, but on Claude this budget also
+    // covers thinking — hence far more headroom than the verdict needs.
+    maxTokens: 4_000,
+    system: `${injectionGuard(nonce)}\n\n${JUDGE_SYSTEM_PROMPT}`,
+    user:
+      `QUESTION:\n${wrapUntrusted(question, nonce)}\n\n` +
+      `EXPECTED ANSWER:\n${wrapUntrusted(expectedAnswer, nonce)}\n\n` +
+      `RETRIEVED FACTS:\n${wrapUntrusted(factsText, nonce)}`,
   });
 
   const verdict = parseLLMJson(
-    response.choices?.[0]?.message?.content,
+    response.text,
     JudgeVerdictSchema,
     'benchmark.judge',
   );

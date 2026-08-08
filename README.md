@@ -40,19 +40,21 @@ This is an **independent R&D project**, published openly so the architecture can
 criticised and reused. It is feature-complete for the v5.2.0 scope described below, and
 it is *not* a hosted commercial service.
 
-Two things are worth knowing before you clone it:
+One thing is worth knowing before you clone it:
 
-- **The LLM layer is not portable yet.** `librarian.ts`, `dreamer.ts` and `benchmark.ts`
-  call `z-ai-web-dev-sdk`, which is tied to the environment this was originally built in.
-  Everything else — the API surface, the multi-tenant model, the spreading-activation
-  query engine, GDPR, RBAC — runs anywhere. Swapping the SDK for a provider-agnostic
-  client is the top item on the near-term list.
 - **Prompt injection is contained, not solved.** The Librarian ingests untrusted text and
   feeds it to an LLM. Every such call now fences the payload with a per-call random nonce
   and validates the reply against a strict schema before anything is written
   (`src/lib/llm-safety.ts`), so a compromised model cannot write outside the contract.
   It can still influence *which* plausible facts get extracted — see
   [SECURITY.md](./SECURITY.md).
+
+**Running it needs one API key and nothing else.** Every model call goes through
+`src/lib/llm-client.ts`, which ships three adapters: the official Anthropic SDK, any
+OpenAI-compatible `/chat/completions` endpoint (OpenAI, Groq, OpenRouter, Together,
+vLLM, Ollama), and the `z-ai-web-dev-sdk` this was first built against. Export
+`ANTHROPIC_API_KEY` or `OPENAI_API_KEY` and the provider is auto-detected; set
+`LLM_PROVIDER` and `LLM_MODEL` to pin it explicitly.
 
 ---
 
@@ -114,8 +116,9 @@ Two things are worth knowing before you clone it:
 └─────────────────────────────────────────────────────────────┘
                          │
               ┌──────────▼──────────┐
-              │   z-ai-web-dev-sdk  │
-              │  (LLM: GPT-4o-mini)│
+              │    llm-client.ts    │
+              │ Anthropic / OpenAI- │
+              │ compatible / z-ai   │
               └─────────────────────┘
 ```
 
@@ -178,7 +181,7 @@ The Librarian processes unprocessed ledger entries and extracts structured knowl
 
 **Pipeline**:
 1. Fetch all `processed=false` ledger entries for a workspace
-2. For each entry, call GPT-4o-mini to extract: Facts, Decisions, Disputes, Preferences
+2. For each entry, call the configured LLM to extract: Facts, Decisions, Disputes, Preferences
 3. **Auto-associate** new facts with existing facts using LLM (label: supports/contradicts/extends/related/causes/requires)
 4. **Supersede chain**: if a new fact contradicts an existing one, the old fact is marked `stale` and the new one becomes the head of the chain
 5. **Brief rebuild**: after all extractions, rebuild the delta-brief for affected topics
@@ -272,7 +275,7 @@ The Dreamer generates novel insights by **cross-pollinating** knowledge between 
    - With probability 0.85: exploit the pair with highest estimated value
    - Budget: 30 pair-evaluations per run
    - Topic count capped at 50 (by fact count) to avoid O(n²) explosion
-2. **Cross-topic collision**: For each selected pair (topicA, topicB), collect top facts from each, call GPT-4o-mini to generate insights
+2. **Cross-topic collision**: For each selected pair (topicA, topicB), collect top facts from each, call the configured LLM to generate insights
 3. **Spark generation**: Each insight becomes a `Spark` with:
    - `kind`: analogy | contradiction | opportunity | risk | missing-link | optimization
    - `score`: LLM-assessed relevance (0-1)
@@ -316,8 +319,8 @@ The Dreamer generates novel insights by **cross-pollinating** knowledge between 
 | **Tables** | TanStack Table | 8.x |
 | **Markdown** | @mdxeditor/editor, react-markdown | 3.x / 10.x |
 | **Scheduling** | croner | 10.x |
-| **AI SDK** | z-ai-web-dev-sdk | 0.0.18 |
-| **LLM** | GPT-4o-mini (via SDK) | — |
+| **LLM client** | `src/lib/llm-client.ts` | provider-agnostic |
+| **LLM providers** | Anthropic SDK · OpenAI-compatible · z-ai (legacy) | — |
 | **Reverse Proxy** | Caddy | — |
 | **Password Hashing** | bcryptjs | 3.x |
 
@@ -701,7 +704,7 @@ Evidence Sessions → Ledger (backdated) → Librarian (extract) → Brain Query
 | `multi_session` | 3 | Facts spanning multiple sessions are connected |
 | `temporal` | 3 | Temporal ordering and recency are respected |
 
-**Judge**: GPT-4o-mini scores each result 0.0–1.0 based on whether the returned facts contain the expected answer, with partial credit.
+**Judge**: the configured LLM scores each result 0.0–1.0 based on whether the returned facts contain the expected answer, with partial credit.
 
 **Cost**: ~$0.50 for 50 questions (gpt-4o-mini for both extraction and judge).
 
@@ -809,6 +812,11 @@ See [`.env.example`](./.env.example) for the complete documented list.
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | Yes | — | SQLite connection string (`file:./db/custom.db`) |
+| `LLM_PROVIDER` | No | *(auto-detect)* | `anthropic` / `openai` / `zai` |
+| `LLM_MODEL` | No | per provider | Overrides the provider's default model |
+| `ANTHROPIC_API_KEY` | * | — | Selects and authenticates the Anthropic adapter |
+| `OPENAI_API_KEY` | * | — | Selects and authenticates the OpenAI-compatible adapter |
+| `OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | Point at Groq, OpenRouter, Ollama, vLLM… |
 | `NEXTAUTH_SECRET` | Prod | Insecure dev fallback | JWT signing secret |
 | `NEXTAUTH_URL` | Prod | `http://localhost:3000` | Public app URL |
 | `SCHEDULER_SECRET` | No | *(disabled)* | Bearer token for `/api/scheduler/tick` |
@@ -866,19 +874,38 @@ throw new RateLimitError("Too many requests");                   // 429
 
 `withHandler()` catches these and returns structured JSON responses.
 
-### LLM Calls (z-ai-web-dev-sdk)
+### LLM Calls
 
-**Never import at module level** — use lazy loading to avoid TDZ issues with Turbopack:
+Never call a provider SDK directly — go through `src/lib/llm-client.ts`. It picks the
+adapter, applies the per-provider quirks (Claude rejects `temperature`; the
+OpenAI-compatible adapter needs a base URL) and keeps every SDK import lazy, which is
+also what avoids the Turbopack TDZ crash that module-level imports caused here.
+
 ```typescript
-let _zai: Awaited<ReturnType<typeof import('z-ai-web-dev-sdk').default.create>> | null = null;
-async function getZAI() {
-  if (!_zai) {
-    const mod = await import('z-ai-web-dev-sdk');
-    _zai = await mod.default.create();
-  }
-  return _zai;
-}
+import { complete } from '@/lib/llm-client';
+import { parseLLMJson, injectionGuard, newNonce, wrapUntrusted } from '@/lib/llm-safety';
+
+const nonce = newNonce();
+const response = await complete({
+  context: 'myfeature.extract',   // shows up in logs
+  effort: 'low',                  // Claude reasoning depth; ignored elsewhere
+  temperature: 0.1,               // OpenAI-compatible + z-ai only
+  system: `${injectionGuard(nonce)}\n\n<your instructions and output schema>`,
+  user: wrapUntrusted(userSuppliedText, nonce),
+});
+
+// Never JSON.parse() a model reply directly — validate against a Zod schema.
+const result = parseLLMJson(response.text, MySchema, 'myfeature.extract');
+if (!result) return fallback();   // malformed or hostile reply — degrade, don't throw
 ```
+
+Two rules that are not optional: **fence anything user-supplied** with
+`wrapUntrusted()` + `injectionGuard()`, and **validate every reply** with
+`parseLLMJson()` before it touches the database. See [SECURITY.md](./SECURITY.md).
+
+**Adding a provider**: implement one `complete*()` function in `llm-client.ts`, add it
+to the `LLMProvider` union and the `switch`, and give it a default model. Nothing
+outside that file needs to change.
 
 ### UI Development
 
@@ -901,14 +928,18 @@ async function getZAI() {
 - [x] Multi-tenant RBAC (owner/admin/member)
 - [x] GDPR compliance (consent, export, erase, audit)
 - [x] Prompt-injection containment on every LLM call (nonce fencing + schema validation)
+- [x] Provider-agnostic LLM client (Anthropic · OpenAI-compatible · z-ai)
+- [x] Role-gated MCP pipeline tools (`run_dreamer`, `run_librarian`)
 - [x] Benchmark harness (LongMemEval-style)
 - [x] Contest system
 - [x] Full security audit (17 findings fixed)
 
 ### Planned
-- [ ] **Provider-agnostic LLM client** — replace `z-ai-web-dev-sdk` so the repo runs anywhere
 - [ ] **Phase A**: LLM query expansion before keyword seeding (designed, not yet built)
-- [ ] Broaden test coverage beyond `llm-safety` to the extraction and query pipelines
+- [ ] **Structured outputs** on the Anthropic adapter (`output_config.format`) instead of
+      parsing JSON out of free text — the uniform text contract is what keeps the
+      adapters interchangeable today
+- [ ] Broaden test coverage to the extraction and query pipelines (needs a test database)
 - [ ] **Phase C**: Fact-level embeddings for hybrid seed (semantic + keyword)
 - [ ] Real-time WebSocket notifications
 - [ ] File/document ingestion (PDF, DOCX, Markdown)

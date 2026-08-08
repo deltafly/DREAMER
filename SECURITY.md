@@ -16,7 +16,10 @@ are documented in [`CHANGELOG.md`](./CHANGELOG.md) under `[5.2.0]`. Key controls
 - RBAC (owner/admin/member) on privileged routes
 - JWT session invalidation via `User.sessionVersion`
 - IP- and identity-based rate limiting on auth endpoints
-- Agent API keys stored as SHA-256 hashes, shown once at creation
+- Agent API keys stored as SHA-256 hashes, generated randomly and shown once at
+  creation — including by `prisma/seed.ts`, so no deployment ships a shared key
+- MCP tools that start an LLM pipeline (`run_dreamer`, `run_librarian`) are role-gated
+  in `src/lib/mcp-permissions.ts`; a read-only `worker` key cannot reach them
 - CSP headers, 1 MB request body cap, Zod validation on all inputs
 - Audit logging across 10 sensitive event types
 

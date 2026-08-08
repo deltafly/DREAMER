@@ -1,15 +1,18 @@
 import { db } from '@/lib/db';
-import { getWorkspaceId } from '@/lib/auth-helpers';
+import { getWorkspaceId, requireAuth, verifyWorkspaceAccess } from '@/lib/auth-helpers';
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
+import { checkToolAccess } from '@/lib/mcp-permissions';
 import { executeBrainQuery } from '@/lib/brain-query';
 import { getNeuralStats } from '@/lib/brain-stats';
 import { getKnowledgeGaps } from '@/lib/brain-gaps';
 import { generateInsights } from '@/lib/brain-insights';
 import { getKnowledgeGraph } from '@/lib/brain-graph';
 import { extractClientIp, rateLimit } from '@/lib/rate-limiter';
+
+const IS_DEV = process.env.NODE_ENV !== 'production';
 
 // ===================================================================
 // MCP (Model Context Protocol) Server — OneBrainer Brain Extension
@@ -811,11 +814,30 @@ async function authenticateAgentKey(request: NextRequest): Promise<{
   };
 }
 
+/**
+ * Workspace membership role for a session-authenticated caller.
+ *
+ * Returns null when the request isn't session-authenticated (agent-key path,
+ * or the development fallback) — `checkToolAccess` decides what that means.
+ */
+async function resolveSessionRole(workspaceId: number): Promise<string | null> {
+  try {
+    const userId = await requireAuth();
+    return await verifyWorkspaceAccess(userId, workspaceId);
+  } catch {
+    return null;
+  }
+}
+
 // ===== Main MCP Request Handler =====
 async function handleMcpRequest(request: NextRequest): Promise<JsonRpcResponse | Response> {
   // Try agent-key auth first, then fall back to session/dev auth
   const agentAuth = await authenticateAgentKey(request);
   const workspaceId = agentAuth?.workspaceId ?? await getWorkspaceId(request);
+
+  // Role backing the privileged-tool gate below. Agent keys carry their own
+  // role; session callers fall back to their workspace membership role.
+  const callerRole = agentAuth?.role ?? await resolveSessionRole(workspaceId);
 
   let body: JsonRpcRequest;
   try {
@@ -875,6 +897,18 @@ async function handleMcpRequest(request: NextRequest): Promise<JsonRpcResponse |
       const handler = TOOL_HANDLERS[toolName];
       if (!handler) {
         return error(id ?? null, -32601, `Unknown tool: ${toolName}. Available tools: ${Object.keys(TOOL_HANDLERS).join(', ')}`);
+      }
+
+      // run_dreamer / run_librarian start LLM pipelines that spend tokens and
+      // mutate the knowledge base — a read-only worker key must not reach them.
+      const access = checkToolAccess(toolName, callerRole, IS_DEV);
+      if (!access.allowed) {
+        logger.warn('MCP tool call refused by role gate', {
+          tool: toolName,
+          role: callerRole ?? '(none)',
+          workspaceId,
+        });
+        return error(id ?? null, -32604, access.reason ?? 'Insufficient permissions');
       }
 
       try {

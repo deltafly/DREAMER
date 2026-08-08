@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
+import { complete, describeLLM } from '@/lib/llm-client';
 import {
   AssociationListSchema,
   LibrarianExtractionSchema,
@@ -10,16 +11,6 @@ import {
   wrapUntrusted,
   type LibrarianExtraction,
 } from '@/lib/llm-safety';
-
-// Lazy ZAI loader — avoids pulling in z-ai-web-dev-sdk at module eval time (TDZ fix)
-let _zai: Awaited<ReturnType<typeof import('z-ai-web-dev-sdk').default.create>> | null = null;
-async function getZAI() {
-  if (!_zai) {
-    const mod = await import('z-ai-web-dev-sdk');
-    _zai = await mod.default.create();
-  }
-  return _zai;
-}
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 const daysFromNow = (d: number) => {
@@ -144,12 +135,11 @@ async function autoAssociate(
   const existingFactsText = wrapUntrusted(existingFacts.map(factLine).join('\n'), nonce);
 
   try {
-    const zai = await getZAI();
-    const response = await zai.chat.completions.create({
-      messages: [
-        {
-          role: 'system',
-          content: `${injectionGuard(nonce)}
+    const response = await complete({
+      context: 'librarian.autoAssociate',
+      effort: 'low',
+      temperature: 0.2,
+      system: `${injectionGuard(nonce)}
 
 You are a knowledge graph builder. Find meaningful connections between NEW facts and EXISTING facts.
 The [id:N] prefixes are trusted; only ids present in the input may be referenced.
@@ -164,21 +154,15 @@ Rules:
 - If one fact enables another, use "causes" or "requires"
 - If they say opposite things, use "contradicts"
 - Maximum 10 associations`,
-        },
-        {
-          role: 'user',
-          content: `NEW facts (recently extracted):
+      user: `NEW facts (recently extracted):
 ${newFactsText}
 
 EXISTING facts (already in knowledge base):
 ${existingFactsText}`,
-        },
-      ],
-      temperature: 0.2,
     });
 
     const associations = parseLLMJson(
-      response.choices?.[0]?.message?.content,
+      response.text,
       AssociationListSchema,
       'librarian.autoAssociate',
     );
@@ -452,12 +436,11 @@ export async function runLibrarian(workspaceId: number): Promise<{ success: bool
       );
 
       try {
-        const zai = await getZAI();
-        const response = await zai.chat.completions.create({
-          messages: [
-            {
-              role: 'system',
-              content: `${injectionGuard(nonce)}
+        const response = await complete({
+          context: 'librarian.extract',
+          effort: 'low',
+          temperature: 0.1,
+          system: `${injectionGuard(nonce)}
 
 You are the OneBrainer Librarian. Extract structured knowledge from session digests.
 Output ONLY valid JSON matching this schema:
@@ -474,20 +457,14 @@ Rules:
 - If unsure, omit it. Better to miss a fact than fabricate one.
 - review_days: volatile=30, structural=180, default=60
 - Maximum 50 facts, 25 of everything else, across the whole reply.`,
-            },
-            {
-              role: 'user',
-              content: `Process these session digests:\n\n${entriesText}`,
-            },
-          ],
-          temperature: 0.1,
+          user: `Process these session digests:\n\n${entriesText}`,
         });
 
         // Validate before anything reaches the database. A reply that does not
         // match the contract is discarded wholesale and we fall back to the
         // heuristic path — a compromised model cannot widen its own schema.
         const extraction = parseLLMJson(
-          response.choices?.[0]?.message?.content,
+          response.text,
           LibrarianExtractionSchema,
           'librarian.extract',
         );
@@ -551,7 +528,7 @@ Rules:
       result.briefsRebuilt++;
     }
 
-    const method = llmUsed ? 'LLM (glm-4-flash)' : 'heuristic';
+    const method = llmUsed ? `LLM (${describeLLM()})` : 'heuristic';
     const summary = `Processed ${unprocessed.length} entries via ${method}. Extracted ${result.factsExtracted} facts, ${result.decisionsExtracted} decisions. ${result.disputesCreated} disputes. ${result.associationsCreated} auto-associations. Rebuilt ${result.briefsRebuilt} briefs. Flagged ${result.staleFlagged} stale.`;
 
     await db.librarianRun.update({

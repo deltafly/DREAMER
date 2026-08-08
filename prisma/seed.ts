@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { createHash, randomBytes } from 'crypto';
 
 const db = new PrismaClient();
 
@@ -47,15 +48,41 @@ async function main() {
   });
 
   // === AGENTS ===
-  await db.agent.createMany({
-    data: [
-      { agentId: 'claude-web', keyHash: 'sha256:abc123', role: 'owner', workspaceId: 1 },
-      { agentId: 'claude-code', keyHash: 'sha256:def456', role: 'worker', workspaceId: 1 },
-      { agentId: 'orchestrator', keyHash: 'sha256:ghi789', role: 'orchestrator', workspaceId: 1 },
-      { agentId: 'glm-worker-1', keyHash: 'sha256:jkl012', role: 'worker', workspaceId: 1 },
-      { agentId: 'librarian', keyHash: 'sha256:mno345', role: 'librarian', workspaceId: 1 },
-    ]
+  // Each agent gets a freshly generated key. Only the SHA-256 hash is stored,
+  // and the plaintext is printed once here — exactly as the real
+  // POST /api/agents flow behaves. Earlier revisions of this file seeded
+  // fixed placeholder hashes ("sha256:abc123"), which looked like working
+  // credentials while matching no key at all; a shared literal here would be
+  // worse still, since every deployment would ship the same agent key.
+  const agentSpecs = [
+    { agentId: 'claude-web', role: 'owner' },
+    { agentId: 'claude-code', role: 'worker' },
+    { agentId: 'orchestrator', role: 'orchestrator' },
+    { agentId: 'glm-worker-1', role: 'worker' },
+    { agentId: 'librarian', role: 'librarian' },
+  ];
+
+  const issuedKeys = agentSpecs.map(spec => {
+    const rawKey = `ob_${randomBytes(24).toString('hex')}`;
+    return {
+      ...spec,
+      rawKey,
+      keyHash: `sha256:${createHash('sha256').update(rawKey).digest('hex')}`,
+      workspaceId: 1,
+    };
   });
+
+  await db.agent.createMany({
+    data: issuedKeys.map(({ agentId, keyHash, role, workspaceId }) => ({
+      agentId, keyHash, role, workspaceId,
+    })),
+  });
+
+  console.log('\n=== Agent API keys (shown once — store them now) ===');
+  for (const { agentId, role, rawKey } of issuedKeys) {
+    console.log(`  ${agentId.padEnd(16)} ${role.padEnd(13)} ${rawKey}`);
+  }
+  console.log('Use as: Authorization: Bearer <key> against POST /api/mcp\n');
 
   // === PREFERENCES ===
   await db.preference.createMany({

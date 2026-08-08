@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
+import { complete } from '@/lib/llm-client';
 import {
   DreamerBatchSchema,
   injectionGuard,
@@ -8,16 +9,6 @@ import {
   parseLLMJson,
   wrapUntrusted,
 } from '@/lib/llm-safety';
-
-// Lazy ZAI loader — avoids pulling in z-ai-web-dev-sdk at module eval time (TDZ fix)
-let _zai: Awaited<ReturnType<typeof import('z-ai-web-dev-sdk').default.create>> | null = null;
-async function getZAI() {
-  if (!_zai) {
-    const mod = await import('z-ai-web-dev-sdk');
-    _zai = await mod.default.create();
-  }
-  return _zai;
-}
 
 const now = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
@@ -154,12 +145,13 @@ async function collideTopicsBatch(
   const topicBlocksText = joinUntrusted(topicBlocks);
 
   try {
-    const zai = await getZAI();
-    const response = await zai.chat.completions.create({
-      messages: [
-        {
-          role: 'system',
-          content: `${injectionGuard(nonce)}
+    // Cross-topic association is the one genuinely creative call in the
+    // system, so it runs at higher effort and temperature than extraction.
+    const response = await complete({
+      context: 'dreamer.collide',
+      effort: 'medium',
+      temperature: 0.7,
+      system: `${injectionGuard(nonce)}
 
 You are the OneBrainer Dreamer — an associative thinking engine. You receive MULTIPLE pairs of topics and must find sparks and associations for EACH pair independently.
 
@@ -181,19 +173,13 @@ Rules:
 - Maximum 3 sparks and 5 associations PER PAIR
 - If no meaningful connections exist for a pair, return empty arrays for it
 - fact IDs must be actual IDs from the input facts`,
-        },
-        {
-          role: 'user',
-          content: `Process these ${pairs.length} topic pairs:\n\n${topicBlocksText}`,
-        },
-      ],
-      temperature: 0.7,
+      user: `Process these ${pairs.length} topic pairs:\n\n${topicBlocksText}`,
     });
 
     // Schema validation replaces the hand-rolled filters below: enums, score
     // clamping and per-pair caps are all enforced by DreamerBatchSchema.
     const result = parseLLMJson(
-      response.choices?.[0]?.message?.content,
+      response.text,
       DreamerBatchSchema,
       'dreamer.collide',
     );
