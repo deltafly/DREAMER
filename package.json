@@ -16,6 +16,8 @@
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "test": "bun ./test/llm-safety.test.ts && bun ./test/mcp-permissions.test.ts && bun ./test/llm-client.test.ts && bun ./test/time.test.ts && bun ./test/sql-tables.test.ts && bun ./test/schema-drift.test.ts && bun ./test/embeddings.test.ts && bun ./test/agent-keys.test.ts",
+    "test:db": "bun ./test/db/brain-query.test.ts && bun ./test/db/credentials.test.ts && bun ./test/db/librarian.test.ts",
+    "test:all": "bun run test && bun run test:db",
     "db:generate": "prisma generate",
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",

@@ -18,7 +18,13 @@ jobs:
       - run: bunx prisma generate
       - run: bun run lint
       - run: bunx tsc --noEmit
+      # Offline suite: no database, no network, no API key.
       - run: bun run test
+      # Database suite: builds a throwaway SQLite file by applying the
+      # migrations, the way a fresh clone does. Still no network and no key.
+      # This is the gate that would have caught the 2026-08-08 blockers, both of
+      # which passed lint, tsc and the build.
+      - run: bun run test:db
 
   build:
     needs: lint-and-typecheck

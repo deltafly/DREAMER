@@ -998,6 +998,45 @@ outside that file needs to change.
 
 ---
 
+## Tests
+
+Two suites, split by what they need rather than by what they cover.
+
+```bash
+bun run test       # offline: no database, no network, no API key
+bun run test:db    # builds a throwaway SQLite file from the migrations
+bun run test:all   # both
+```
+
+Every test is a plain script that exits non-zero on failure — no runner, no
+config, no dependency. Both suites run in CI on every push.
+
+**Offline** (`test/`) covers what can be decided without a database: prompt
+injection containment, MCP role gating, provider resolution, timestamp
+normalisation, vector maths, and two static scans of the source tree — one that
+checks every raw SQL table name against the migrations, one that fails if a key
+or key hash is ever written into `src/` or `prisma/`.
+
+**Database** (`test/db/`) applies the migrations to a temporary file, exactly as
+a fresh clone does, and runs the real engine against it. Deliberately not
+`prisma db push`: pushing builds the shape the client expects, which is the one
+shape that cannot reveal a mismatch between the schema and what a deployment
+actually gets.
+
+That distinction is not theoretical. Two blockers found on 2026-08-08 lived
+precisely in it — raw SQL naming tables the migrations do not create, and a
+column the client selects that no migration ever added. Both passed `lint`,
+`tsc --noEmit` and `next build`; both broke every fresh clone. The first
+assertion in `test/db/brain-query.test.ts` is that a query returns anything at
+all, because that is the assertion that was missing.
+
+**Not covered yet**: the routes themselves, over HTTP, with sessions and status
+codes. The data layer beneath them is tested for tenant isolation, but a
+`fetch()`-level test of "user A gets 403 on workspace B" needs a running server
+and does not exist.
+
+---
+
 ## Roadmap
 
 ### Current Status (v5.2.0)
@@ -1015,12 +1054,14 @@ outside that file needs to change.
 - [x] Full security audit (17 findings fixed)
 - [x] Optional fact-level embeddings for hybrid seeding (semantic + keyword)
 - [x] Backdatable ledger entries, so imported history keeps its real timeline
+- [x] Database-backed test suite that applies the migrations, not the schema
 
 ### Planned
 - [ ] **Structured outputs** on the Anthropic adapter (`output_config.format`) instead of
       parsing JSON out of free text — the uniform text contract is what keeps the
       adapters interchangeable today
-- [ ] Broaden test coverage to the extraction and query pipelines (needs a test database)
+- [ ] Route-level tests over HTTP — status codes, sessions, and a `fetch()`-level
+      tenant isolation check; the data layer under them is covered, the wire is not
 - [ ] Measure the hybrid seed against the keyword seed on the same question set —
       `seeding.semanticOnlySeeds` makes the contribution visible per query, but a
       published number needs a full run

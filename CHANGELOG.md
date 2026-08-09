@@ -112,6 +112,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and reported that a query expansion had run when no such feature existed.
 - 86 new test assertions across `time`, `embeddings`, `sql-tables` and
   `schema-drift`, all offline — no database, no network, no API key.
+- **A database-backed test suite** (`test/db/`, `bun run test:db`), wired into CI.
+  It applies the migrations to a temporary file the way a fresh clone does —
+  deliberately not `prisma db push`, which would build the shape the client expects
+  and so could never reveal the mismatch that broke every clone. Covers the brain
+  query engine end to end (including spreading activation, Hebbian write-back and
+  tenant isolation), agent key issuing, verification and rotation, reset token
+  lifecycle, and the Librarian's heuristic ingestion path with no LLM configured.
+  Verified that reverting the table-name fix makes it fail with the original
+  runtime error.
 
 ## [5.2.0] - 2025-07-12
 
