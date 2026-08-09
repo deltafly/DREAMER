@@ -1,6 +1,16 @@
 // src/lib/rate-limiter.ts
 // In-memory sliding window rate limiter
 // Map<key, { timestamps: number[] }>
+//
+// Counters live in this process, which is only correct while there is exactly
+// one. Behind two instances each keeps its own tally, so the effective limit is
+// the configured one multiplied by the instance count — and a restart clears it
+// entirely. That is a real ceiling on how this can be deployed, not a detail:
+// the app stores its data in a single SQLite file and cannot be scaled out
+// anyway. See "Single instance only" in docs/DEPLOYMENT.md.
+//
+// A shared store (Redis, or a table) is what lifts that ceiling, and it should
+// arrive together with the move off SQLite rather than before it.
 
 import { RateLimitError } from '@/lib/errors';
 

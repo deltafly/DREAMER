@@ -19,7 +19,7 @@ export const POST = withHandler(async (request: NextRequest) => {
   if (!parsed.success) throw new ValidationError('Invalid input', parsed.error.issues);
 
   const { token, password } = parsed.data;
-  const data = consumeResetToken(token);
+  const data = await consumeResetToken(token);
 
   if (!data) {
     throw new ValidationError('Érvénytelen vagy lejárt token');

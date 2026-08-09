@@ -6,6 +6,7 @@
 
 ## Tartalomjegyzék
 
+0. [Egyetlen példány](#egyetlen-példány)
 1. [Előfeltételek](#előfeltételek)
 2. [Environment változók](#environment-változók)
 3. [Telepítés](#telepítés)
@@ -15,6 +16,29 @@
 7. [Seed adatok](#seed-adatok)
 8. [Fordított proxy (Caddy)](#fordított-proxy-caddy)
 9. [Üzemeltetés](#üzemeltetés)
+
+---
+
+## Egyetlen példány
+
+**Ezt a rendszert egyetlen példányban kell futtatni.** Nem ajánlás, hanem
+következmény: az adat egyetlen SQLite fájlban van, amibe egyszerre egy író fér
+hozzá. Aki két konténert indít ugyanarra a kötetre, az nem duplázza a
+kapacitást, hanem elrontja a következő három dolgot — és mindhárom **némán**
+romlik el, hibaüzenet nélkül:
+
+| Mi | Mi történik két példánynál |
+|----|----------------------------|
+| **Rate limit** (`src/lib/rate-limiter.ts`) | Példányonként külön számol → a tényleges limit a beállított **szorozva a példányszámmal**. Újraindításkor nullázódik. |
+| **Task lock** (`src/lib/task-lock.ts`) | Példányonként külön → a Librarian vagy a Dreamer **párhuzamosan is elindulhat** ugyanarra a workspace-re, duplikált tényeket és fölösleges LLM-költséget termelve. |
+| **SQLite írás** | `database is locked` hibák terhelés alatt. |
+
+Amit **nem** érint: a session (JWT, állapotmentes), a jelszó-visszaállító
+tokenek (2026-08-09 óta adatbázisban) és maga a tudásbázis.
+
+Ha vízszintesen kell skálázni, a sorrend: **előbb Postgres**, és csak utána
+megosztott rate limit és task lock (Redis vagy tábla). Fordítva nincs értelme —
+megosztott lock egy nem megosztott adatbázis fölött csak látszat.
 
 ---
 
@@ -172,23 +196,43 @@ A dashboard elérhető: `http://localhost:3000`
 A `package.json` build scriptje:
 
 ```bash
-"build": "prisma generate && prisma migrate deploy && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/"
+"build": "prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/"
 ```
 
 ### Lépések sorrendje
 
 1. **`prisma generate`** — Prisma Client generálás a séma alapján
-2. **`prisma migrate deploy`** — Várakozó migration-ek alkalmazása (non-interactive)
-3. **`next build`** — Next.js standalone build (`output: "standalone"` a `next.config.ts`-ben)
-4. **`cp -r .next/static`** — Statikus fájlok másolása a standalone könyvtárba
-5. **`cp -r public`** — Public mappa másolása a standalone könyvtárba
+2. **`next build`** — Next.js standalone build (`output: "standalone"` a `next.config.ts`-ben)
+3. **`cp -r .next/static`** — Statikus fájlok másolása a standalone könyvtárba
+4. **`cp -r public`** — Public mappa másolása a standalone könyvtárba
+
+> **A build NEM migrál.** Korábban a `prisma migrate deploy` a build része volt, a
+> Dockerfile-ban ráadásul `|| true`-val. Ez két okból rossz: egy build ne írjon
+> adatbázisba, a Docker builder stage-ben pedig **nincs is adatbázis** (a `db/` a
+> `.dockerignore`-ban van, az éles fájl futásidőben mountolódik) — vagyis a parancs
+> a semmire futott, elbukott, a `|| true` elnyelte, és **az éles adatbázis soha nem
+> lett migrálva**. A konténer elindult egy régebbi sémára, és később, futásidőben
+> hasalt el az első olyan kérésnél, ami hiányzó oszlopot érintett.
+>
+> A migráció mostantól **indításkor** fut, `|| true` nélkül: ha nem megy át, a
+> szolgáltatás nem indul el. Rossz sémán futó szerver rosszabb, mint egy leállt
+> szerver, mert úgy néz ki, mintha működne.
 
 ### Production indítás
 
+Docker esetén semmi teendő — a `docker-entrypoint.sh` migrál, majd indít.
+
+Docker nélkül a migrációt indítás előtt kell futtatni:
+
 ```bash
+bun run migrate:start
+```
+
+vagy kézzel:
+
+```bash
+prisma migrate deploy
 NODE_ENV=production bun .next/standalone/server.js
-# vagy
-NODE_ENV=production node .next/standalone/server.js
 ```
 
 A server alapértelmezetten a 3000-es porton hallgat.
@@ -410,7 +454,8 @@ done
 | Script | Parancs | Leírás |
 |--------|---------|--------|
 | `dev` | `next dev -p 3000` | Dev server (Turbopack) |
-| `build` | `prisma generate && migrate deploy && next build` | Production build |
+| `build` | `prisma generate && next build` | Production build (nem migrál) |
+| `migrate:start` | `prisma migrate deploy && bun .next/standalone/server.js` | Migrálás, majd indítás Docker nélkül |
 | `start` | `node .next/standalone/server.js` | Production server |
 | `lint` | `eslint .` | Kódellenőrzés |
 | `db:generate` | `prisma generate` | Prisma Client generálás |

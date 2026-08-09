@@ -36,6 +36,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `prisma/migrations/migration_lock.toml`, without which `prisma migrate diff`
   cannot determine the connector.
 
+### Fixed (deployment)
+
+- **The production database was never migrated.** The Dockerfile ran
+  `prisma migrate deploy || true` in the builder stage, where the database does not
+  exist — `db/` is excluded by `.dockerignore` and the real file is volume-mounted at
+  runtime. So it ran against nothing, failed, was swallowed by `|| true`, and a
+  container would start on a schema older than its code and fail later at runtime, on
+  whichever request first touched a missing column. Migrations moved to
+  `docker-entrypoint.sh`, with no `|| true`: a migration that cannot be applied stops
+  the container instead of starting a server against the wrong schema.
+- `prisma migrate deploy` removed from the `build` script — a build has no business
+  writing to a database. Verified that `next build` completes against an empty
+  database with no migrations applied. Added `bun run migrate:start` for non-Docker
+  deployments.
+- **Deleting a fact with associations failed** with a foreign key error;
+  `Association → Fact` was on the default `RESTRICT`. Now `CASCADE`: an association
+  whose endpoint is gone is a dangling edge, not a weaker one. Nothing in the codebase
+  deletes single facts today, so this was a trap for whoever added it rather than a
+  live failure — deleting a whole workspace was always fine, because that cascade
+  reaches both tables.
+- **Password reset tokens moved out of process memory into the database**, stored as
+  SHA-256 hashes. In a Map they failed silently in three ordinary situations: a
+  restart or deploy invalidated every link already in someone's inbox, a second
+  instance never saw the first one's tokens, and anything reading process memory got
+  live credentials in plaintext. Requesting a new link now also invalidates the
+  previous one.
+- Documented, in `docs/DEPLOYMENT.md` and in the code, that the app runs as a **single
+  instance** and precisely what breaks quietly if it does not — per-instance rate
+  limit counters and per-instance task locks, the latter letting two Librarian runs
+  start on the same workspace.
+
 ### Security
 
 - **Agent keys are no longer a constant in the source.** `seedWorkspace()` inserted

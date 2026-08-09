@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { db } from '@/lib/db';
 import { ValidationError } from '@/lib/errors';
 import crypto from 'crypto';
-import { setResetToken } from '@/lib/reset-tokens';
+import { purgeExpiredResetTokens, setResetToken } from '@/lib/reset-tokens';
 import { checkRateLimit } from '@/lib/rate-limiter';
 import { audit, extractRequestMeta } from '@/lib/audit';
 
@@ -29,7 +29,10 @@ export const POST = withHandler(async (request: NextRequest) => {
 
   // Generate reset token
   const token = crypto.randomBytes(32).toString('hex');
-  setResetToken(token, user.id, Date.now() + 30 * 60 * 1000); // 30 min
+  await setResetToken(token, user.id, Date.now() + 30 * 60 * 1000); // 30 min
+
+  // Housekeeping, on the one route that creates these rows.
+  await purgeExpiredResetTokens();
 
   const meta = extractRequestMeta(request);
   await audit({

@@ -15,8 +15,9 @@ COPY . .
 # Generate Prisma client
 RUN bunx prisma generate
 
-# Run DB migrations (SQLite file will be volume-mounted)
-RUN bunx prisma migrate deploy || true
+# Migrations deliberately do NOT run here — see docker-entrypoint.sh. The
+# database is volume-mounted at runtime and does not exist in this stage, so a
+# migrate step here would only ever migrate nothing.
 
 # Build Next.js
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -35,10 +36,20 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
-# Copy Prisma schema for potential runtime migrations
+# Prisma schema, migrations and client, plus the CLI itself — the entrypoint
+# runs `prisma migrate deploy` at startup, so the CLI has to be in this stage
+# and not just in the builder.
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
+
+COPY --chmod=755 docker-entrypoint.sh ./docker-entrypoint.sh
+
+# The database lives on a mounted volume. It has to be writable by this user —
+# migrations write, and SQLite also needs to create -wal and -shm siblings in
+# the same directory.
+RUN mkdir -p /app/db && chown -R nextjs:nodejs /app/db
 
 USER nextjs
 
@@ -47,4 +58,4 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["bun", "server.js"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

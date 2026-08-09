@@ -23,9 +23,10 @@ jobs:
   build:
     needs: lint-and-typecheck
     runs-on: ubuntu-latest
-    # `bun run build` runs `prisma migrate deploy`, and `next build` evaluates
-    # src/lib/env.ts — both need these present or the job fails before compiling.
-    # Throwaway values: CI builds against a scratch SQLite file, never real data.
+    # `next build` evaluates src/lib/env.ts, which requires these to be present.
+    # The build no longer migrates — that moved to the container entrypoint — so
+    # DATABASE_URL only has to parse; nothing here reads or writes a database.
+    # Throwaway values, never real data.
     env:
       DATABASE_URL: "file:./db/ci.db"
       NEXTAUTH_SECRET: "ci-build-only-not-a-real-secret"

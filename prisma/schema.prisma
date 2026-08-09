@@ -20,8 +20,34 @@ model User {
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
   consents       Consent[]
   dataExports    DataExport[]
+  resetTokens    PasswordResetToken[]
 
   @@map("users")
+}
+
+/// A pending password reset.
+///
+/// These used to live in a module-level Map. That had three consequences, all
+/// of them silent: a restart or a deploy invalidated every link already in
+/// someone's inbox, a second instance never saw the first one's tokens, and a
+/// memory dump handed over working credentials in plaintext.
+///
+/// Only a hash of the token is stored, so this table is useless to anyone who
+/// reads it — the same reasoning that applies to a password column.
+model PasswordResetToken {
+  id        Int     @id @default(autoincrement())
+  /// SHA-256 of the token that was mailed out. The token itself is never stored.
+  tokenHash String  @unique
+  userId    Int
+  /// Canonical timestamp, so the expiry comparison is a string range query.
+  expiresAt String
+  createdAt String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }
 
 model Workspace {
@@ -317,8 +343,13 @@ model Association {
   workspaceId      Int
   workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  factA Fact @relation("LinkA", fields: [factIdA], references: [id])
-  factB Fact @relation("LinkB", fields: [factIdB], references: [id])
+  // Cascade, not the default Restrict. An association is a statement about two
+  // facts; with one of them gone it is not a weaker edge, it is a dangling one.
+  // Under Restrict, deleting a fact that any association touches failed with a
+  // foreign key error — a trap for anyone adding fact deletion later. (Deleting
+  // a whole workspace was always fine: that cascade reaches both tables.)
+  factA Fact @relation("LinkA", fields: [factIdA], references: [id], onDelete: Cascade)
+  factB Fact @relation("LinkB", fields: [factIdB], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, factIdA, factIdB, label])
 }
