@@ -28,12 +28,15 @@ function check(name: string, ok: boolean): void {
   }
 }
 
-const saved = process.env.NODE_ENV;
+// Bun's type definitions declare NODE_ENV read-only, so go through a plain
+// record view of the environment rather than the narrowed property.
+const env = process.env as Record<string, string | undefined>;
+const saved = env.NODE_ENV;
 
 /** Evaluate the gate with NODE_ENV set to a given value (or removed). */
 function withNodeEnv(value: string | undefined): boolean {
-  if (value === undefined) delete process.env.NODE_ENV;
-  else process.env.NODE_ENV = value;
+  if (value === undefined) delete env.NODE_ENV;
+  else env.NODE_ENV = value;
   return isDevMode();
 }
 
@@ -72,8 +75,8 @@ const unlocked = isDevMode();
 check('the answer follows the current environment, not the import order',
   locked === false && unlocked === true);
 
-if (saved === undefined) delete process.env.NODE_ENV;
-else process.env.NODE_ENV = saved;
+if (saved === undefined) delete env.NODE_ENV;
+else env.NODE_ENV = saved;
 
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {
