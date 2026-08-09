@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { purgeExpiredResetTokens, setResetToken } from '@/lib/reset-tokens';
 import { checkRateLimit } from '@/lib/rate-limiter';
 import { audit, extractRequestMeta } from '@/lib/audit';
+import { isDevMode } from '@/lib/runtime-mode';
 
 const ForgotSchema = z.object({
   email: z.string().email('Érvénytelen email cím'),
@@ -44,8 +45,11 @@ export const POST = withHandler(async (request: NextRequest) => {
   });
 
   // In production: send email with reset link
-  // For now: return the token in dev mode
-  const isDev = process.env.NODE_ENV !== 'production';
+  // For now: return the token in dev mode.
+  // Handing the token back over the API is account takeover for anyone who
+  // knows an email address, so it is gated on development being declared
+  // outright rather than on production not being detected.
+  const isDev = isDevMode();
 
   return NextResponse.json({
     message: 'Ha az email létezik, jelszó-visszaállító linket küldtünk',

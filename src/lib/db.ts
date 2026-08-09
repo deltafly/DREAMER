@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import { isDevMode } from '@/lib/runtime-mode'
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
@@ -7,9 +8,14 @@ const globalForPrisma = globalThis as unknown as {
 export const db =
   globalForPrisma.prisma ??
   new PrismaClient({
-    ...(process.env.NODE_ENV !== 'production' && { log: ['query'] }),
+    // Query logging is a development convenience and is gated positively: an
+    // unset NODE_ENV should not start writing every statement to stdout.
+    ...(isDevMode() && { log: ['query'] as const }),
   })
 
+// Deliberately the negative test. This one is about surviving Next's hot
+// reload, not about access, and caching the client one time too many is
+// harmless where opening a hole is not.
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db
 
 // Enable WAL mode for better concurrent read performance

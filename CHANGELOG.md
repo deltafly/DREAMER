@@ -69,6 +69,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The development shortcuts failed open.** They were gated on
+  `NODE_ENV !== 'production'`, so an unset variable, an empty string, `Production`
+  with a capital P, or a service manager that did not pass the environment through
+  would silently unlock all four of them at once: unauthenticated access to the
+  default workspace, MCP without an agent key, the password reset token returned in
+  the API response, and a NextAuth secret falling back to a constant published in
+  this repository — which makes every session forgeable by anyone. No error, no log
+  line; the service would look like it was working.
+  The gate is now a positive test in `src/lib/runtime-mode.ts`: development has to
+  say so exactly, and everything else is locked. A missing `NEXTAUTH_SECRET` now
+  stops startup unless development is declared, rather than reaching for the
+  published fallback. The first request that does take a shortcut logs a warning
+  saying the service is unauthenticated.
+  Next's standalone `server.js` sets `NODE_ENV=production` itself, so the shipped
+  path was never open — which is the point: the security posture rested on a default
+  someone else chose, and nothing here asserted it.
 - **Agent keys are no longer a constant in the source.** `seedWorkspace()` inserted
   five literal `keyHash` values committed to this repository, and it runs on every
   registration and every workspace creation — so every workspace of every deployment

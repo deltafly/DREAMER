@@ -4,8 +4,11 @@ import { authOptions } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { AuthError, ForbiddenError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
+import { isDevMode, warnDevShortcut } from '@/lib/runtime-mode';
 
-const IS_DEV = process.env.NODE_ENV !== 'production';
+// Positive test, evaluated per call — see src/lib/runtime-mode.ts for why this
+// is not `NODE_ENV !== 'production'`.
+const IS_DEV = isDevMode();
 
 interface SessionUser {
   userId: number;
@@ -93,10 +96,11 @@ export async function getWorkspaceId(request: NextRequest): Promise<number> {
     throw new ForbiddenError('No workspace found. Create a workspace first.');
   }
 
-  // 4. DEV FALLBACK: Allow unauthenticated access to workspace 1
-  //    This is ONLY active when NODE_ENV !== 'production'
+  // 4. DEV FALLBACK: Allow unauthenticated access to workspace 1.
+  //    Active only when NODE_ENV is exactly 'development'. Anything else —
+  //    including unset — falls through to the AuthError below.
   if (IS_DEV) {
-    logger.debug('DEV MODE: Unauthenticated access using default workspace', {
+    warnDevShortcut('unauthenticated request served from the default workspace', {
       method: request.method,
       url: request.url,
     });

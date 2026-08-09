@@ -31,6 +31,10 @@ async function getLibrarianFn(): Promise<TaskFn> {
 // In dev, the manual "Álmodj most" / "Rendezd most" buttons still work
 // via the direct API routes — only automated scheduling is disabled.
 
+// Deliberately the negative test, unlike the auth gates in runtime-mode.ts.
+// This one decides whether to start spending money on scheduled LLM runs, and
+// there the safe answer to "I am not sure what environment this is" is to stay
+// quiet — the opposite of the answer for an access check.
 const isDev = process.env.NODE_ENV !== 'production';
 
 interface SchedulerInstance {

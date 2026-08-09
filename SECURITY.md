@@ -15,6 +15,13 @@ are documented in [`CHANGELOG.md`](./CHANGELOG.md) under `[5.2.0]`. Key controls
 - Multi-tenant isolation enforced per route (`requireAuth()` → `verifyWorkspaceAccess()`)
 - RBAC (owner/admin/member) on privileged routes
 - JWT session invalidation via `User.sessionVersion`
+- Development shortcuts are gated on `NODE_ENV === 'development'` exactly, never on
+  "not production". Four holes hang off that one answer — unauthenticated access to
+  the default workspace, MCP without a key, the reset token returned in the response
+  body, and a NextAuth secret that falls back to a constant published in this
+  repository — so the gate fails closed: an unset, empty or misspelled `NODE_ENV`
+  locks everything rather than opening it, and a missing `NEXTAUTH_SECRET` stops
+  startup instead of silently signing sessions with the published fallback
 - IP- and identity-based rate limiting on auth endpoints
 - Agent API keys are generated randomly per workspace, stored only as SHA-256
   hashes, and shown once at creation. This holds on every path that issues one —

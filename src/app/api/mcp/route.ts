@@ -3,6 +3,7 @@ import { getWorkspaceId, requireAuth, verifyWorkspaceAccess } from '@/lib/auth-h
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { hashAgentKey } from '@/lib/agent-keys';
+import { isDevMode } from '@/lib/runtime-mode';
 import { logger } from '@/lib/logger';
 import { checkToolAccess } from '@/lib/mcp-permissions';
 import { executeBrainQuery } from '@/lib/brain-query';
@@ -12,7 +13,9 @@ import { generateInsights } from '@/lib/brain-insights';
 import { getKnowledgeGraph } from '@/lib/brain-graph';
 import { extractClientIp, rateLimit } from '@/lib/rate-limiter';
 
-const IS_DEV = process.env.NODE_ENV !== 'production';
+// Positive test — see src/lib/runtime-mode.ts. An unset NODE_ENV must not open
+// the MCP endpoint to unauthenticated callers.
+const IS_DEV = isDevMode();
 
 // ===================================================================
 // MCP (Model Context Protocol) Server — OneBrainer Brain Extension

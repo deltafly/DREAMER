@@ -2,11 +2,15 @@ import bcrypt from 'bcryptjs';
 import type { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import { db } from '@/lib/db';
+import { isDevMode } from '@/lib/runtime-mode';
 // db is used in jwt() callback to check sessionVersion on token refresh
 
-// Block startup if secret is missing in production
+// Block startup unless a secret is present or development is declared outright.
+// Checking for "not development" rather than "is production" means an unset or
+// misspelled NODE_ENV stops the process instead of silently signing sessions
+// with the published fallback below.
 const NEXTAUTH_SECRET = process.env.NEXTAUTH_SECRET;
-if (!NEXTAUTH_SECRET && process.env.NODE_ENV === 'production') {
+if (!NEXTAUTH_SECRET && !isDevMode()) {
   throw new Error(
     'FATAL: NEXTAUTH_SECRET environment variable is required in production. ' +
     'Generate one with: openssl rand -base64 32'
@@ -105,5 +109,9 @@ export const authOptions: NextAuthOptions = {
   pages: {
     signIn: '/',
   },
-  secret: NEXTAUTH_SECRET || (process.env.NODE_ENV !== 'production' ? 'dev-secret-do-not-use-in-production' : undefined),
+  // The fallback is a constant published in this repository, so anything signed
+  // with it can be forged by anyone. It is available only when NODE_ENV says
+  // "development" outright — an unset or misspelled value leaves this undefined
+  // and NextAuth refuses to start, which is the correct way to fail.
+  secret: NEXTAUTH_SECRET || (isDevMode() ? 'dev-secret-do-not-use-in-production' : undefined),
 };
